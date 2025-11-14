@@ -1,5 +1,18 @@
 # EegWorkflowApp
 
+###Function
+The EegWorkflowApp provides a simplified method for running EEG preprocessing and cleaning steps in a semi-automated or fully automated manner. Follow the buttons on the left from top to bottom for standard data reading and preprocessing, next to the middle button column for additional cleaning. The right column provides options for viewing, reviewing, epoching and saving.
+
+Settings are saved between sessions
+
+### Batch mode
+The batch button allows automated batch processing using the settings as visible in the main window. 
+
+###History
+The EegWorkflowApp is the AppDesigner version of the GUIDE based EegWorkflow.
+
+
+
 ## Copyright statements for included code
 
 ### REST reference
@@ -27,6 +40,7 @@ REST_reference_v1.1_20190819
       [1] Calculate leadfield at once, based on canonical concentric-three-spheres head model.
       [2] remove the leadfield.exe.
       [3] add reference papers on the interface
+
 
 
 
