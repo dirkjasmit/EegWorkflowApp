@@ -1,8 +1,8 @@
 # EegWorkflowApp
 
-# Copyright statements for included code
+## Copyright statements for included code
 
-# REST reference
+### REST reference
 
 All copyrights of the software are reserved by the Key Laboratory for NeuroInformation of Ministry of Education, School of Life Science and Technology, University of Electronic Science and Technology of China. This software is for non-commercial use only. It is freeware but not in the public domain.
 
@@ -27,6 +27,7 @@ REST_reference_v1.1_20190819
       [1] Calculate leadfield at once, based on canonical concentric-three-spheres head model.
       [2] remove the leadfield.exe.
       [3] add reference papers on the interface
+
 
 
 
