@@ -8,7 +8,7 @@ Settings are saved between sessions
 ### Batch mode
 The batch button allows automated batch processing using the settings as visible in the main window. 
 
-###History
+### History
 The EegWorkflowApp is the AppDesigner version of the GUIDE based EegWorkflow.
 
 
@@ -40,6 +40,7 @@ REST_reference_v1.1_20190819
       [1] Calculate leadfield at once, based on canonical concentric-three-spheres head model.
       [2] remove the leadfield.exe.
       [3] add reference papers on the interface
+
 
 
 
