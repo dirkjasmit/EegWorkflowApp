@@ -22,7 +22,7 @@ function varargout = figRunBatchModal(varargin)
 
 % Edit the above text to modify the response to help figRunBatchModal
 
-% Last Modified by GUIDE v2.5 07-May-2025 15:56:45
+% Last Modified by GUIDE v2.5 16-Dec-2025 15:05:10
 
 % Begin initialization code - DO NOT EDIT
 gui_Singleton = 1;
@@ -218,14 +218,29 @@ function pushbuttonStart_Callback(hObject, eventdata, handles)
 
 data = guidata(hObject);
 data_parent = guidata(data.Parent);
+
+% make sure pathname matches the edit box.
+data.pathname = data.editSelectFilePath.String;
+
 data_parent.batchpathname = data.pathname;
 data_parent.batchfilenames = data.filenames;
+data_parent.batchprefix = data.editPrefix.String;
+
 % get the checkboxes ticked (1-14)
-checked = [];
-for cb=1:15
-    if get(eval(sprintf('data.checkbox%d',cb)),'Value')
-        checked = [checked cb];
-    end
+checked = table( ...
+    zeros(16,1), ...          % order (int)
+    strings(16,1), ...        % tag (string)
+    zeros(16,1), ...          % number (int)
+    zeros(16,1), ...
+    'VariableNames', {'order','tag','number', 'checked'} ...
+);
+cnt = 0;
+for cb=[1:6 16 7:15] % note that checkbox 16 is not in order! comes after filtering!
+    cnt = cnt + 1;
+    checked.order(cnt) = cnt;
+    checked.number(cnt) = cb;
+    checked.tag(cnt) = sprintf('checkbox%d', cb);
+    checked.checked(cnt) = get(eval(sprintf('data.checkbox%d',cb)),'Value');
 end
 data_parent.batchchecked = checked;
     
@@ -493,17 +508,21 @@ FilterSpec = {'*.*', 'All files'
     };
 
 defpathfilename = sprintf('%s/.figRunBatch_DefaultPath.ini', data.INIDIR);
-fid = fopen(defpathfilename, 'r');
-DefaultPath = '.';
-if fid>0
-    try
-        DefaultPath = fgetl(fid);
-        fclose(fid);
-    catch
-    end
-end 
+if exist(data.pathname)
+    DefaultPath = data.pathname;
+else
+    fid = fopen(defpathfilename, 'r');
+    DefaultPath = '.';
+    if fid>0
+        try
+            DefaultPath = fgetl(fid);
+            fclose(fid);
+        catch
+        end
+    end 
+end
 
-[filenames, pathname, FilterIndex] = uigetfile(FilterSpec,...
+[filenames, pathname, ~] = uigetfile(FilterSpec,...
     'Select EEG files', DefaultPath, ...
     'multiselect', 'on');
 
@@ -516,6 +535,9 @@ end
 % Ensure filenames is a cell array (single selection returns a char)
 if ischar(filenames)
     filenames = {filenames};
+else
+    warning('filenames are not are string?')
+    filenames = {};
 end
 
 % save the path, also add to edit
@@ -730,6 +752,12 @@ function editSelectFilePath_Callback(hObject, eventdata, handles)
 % Hints: get(hObject,'String') returns contents of editSelectFilePath as text
 %        str2double(get(hObject,'String')) returns contents of editSelectFilePath as a double
 
+data = guidata(hObject);
+
+% fill the pathname with the new stringx
+data.pathname = data.editSelectFilePath.String;
+
+guidata(hObject, data);
 
 % --- Executes during object creation, after setting all properties.
 function editSelectFilePath_CreateFcn(hObject, eventdata, handles)
@@ -829,3 +857,35 @@ function editMask_ButtonDownFcn(hObject, eventdata, handles)
 % hObject    handle to editMask (see GCBO)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
+
+
+% --- Executes on button press in checkbox16.
+function checkbox16_Callback(hObject, eventdata, handles)
+% hObject    handle to checkbox16 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hint: get(hObject,'Value') returns toggle state of checkbox16
+
+
+
+function editPrefix_Callback(hObject, eventdata, handles)
+% hObject    handle to editPrefix (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: get(hObject,'String') returns contents of editPrefix as text
+%        str2double(get(hObject,'String')) returns contents of editPrefix as a double
+
+
+% --- Executes during object creation, after setting all properties.
+function editPrefix_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to editPrefix (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
