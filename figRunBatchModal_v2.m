@@ -521,9 +521,16 @@ else
     end 
 end
 
-[filenames, pathname, ~] = uigetfile(FilterSpec,...
-    'Select EEG files', DefaultPath, ...
-    'multiselect', 'on');
+% use uipickfiles for better
+refilt = '\.bdf|\.cnt|\.edf|\.set$';
+typestr = {'*.bdf','Biosemi files'; '*.cnt','Neuroscan or ANT'; '*.edf','European data format'; '*.set','EEGLAB'};
+filenames = uipickfiles('filterspec', sprintf('%s', data.pathname),...
+    'type', typestr, ...
+    'REFilter', refilt, ...
+    'prompt', 'Select files for processing', 'output', 'cell');
+% [filenames, pathname, ~] = uigetfile(FilterSpec,...
+%     'Select EEG files', DefaultPath, ...
+%     'multiselect', 'on');
 
 % Check if the user selected files or canceled
 if isequal(filenames, 0)
@@ -538,11 +545,14 @@ elseif iscell(filenames) && ~ischar(filenames{1})
     error('Filenames are not are string?')
 end
 
-% save the path, also add to edit
-fid = fopen(defpathfilename,'w');
-if fid>0
-    fprintf(fid,'%s',pathname);
-    fclose(fid);
+% set the path to the path of the first selected file, then save the path
+if length(filenames)>0 && iscell(filenames)
+    pathname = fileparts(filenames{1});
+    fid = fopen(defpathfilename,'w');
+    if fid>0
+        fprintf(fid,'%s',pathname);
+        fclose(fid);
+    end
 end
 % save the filenames
 fid = fopen(sprintf('%s/.figRunBatch_Filenames.ini', data.INIDIR), 'w');
@@ -556,8 +566,7 @@ end
 
 % save in struct and wait for next buttonpress
 data.filenames = filenames;
-data.pathname = pathname;
-
+% data.pathname = pathname; not necessary anymore. Path in filenames
 data.editSelectFilePath.String = pathname;
 data.editSelectFileNum.String = sprintf('%d files', length(filenames));
 
