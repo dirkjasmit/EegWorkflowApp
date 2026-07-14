@@ -22,7 +22,7 @@ function varargout = figRunBatchModal_v2(varargin)
 
 % Edit the above text to modify the response to help figRunBatchModal_v2
 
-% Last Modified by GUIDE v2.5 27-Mar-2026 18:43:56
+% Last Modified by GUIDE v2.5 10-Jul-2026 21:28:15
 
 % Begin initialization code - DO NOT EDIT
 gui_Singleton = 1;
@@ -228,15 +228,16 @@ data_parent.batchfilenames = data.filenames;
 data_parent.batchprefix = data.editPrefix.String;
 data_parent.batchoutputdir = data.outputdir;
 
-% get the checkboxes ticked (1-14)
+% get the checkboxes ticked (1-ncheck)
+ncheck = 16;
 checked = table( ...
-    zeros(16,1), ...          % order (int)
-    strings(16,1), ...        % tag (string)
-    zeros(16,1), ...
+    zeros(ncheck,1), ...          % order (int)
+    strings(ncheck,1), ...        % tag (string)
+    zeros(ncheck,1), ...
     'VariableNames', {'order','tag', 'value'} ...
 );
 
-for cb=1:13 % warning: this is hard coded!
+for cb=1:ncheck % warning: this is hard coded!
     checked.order(cb) = cb;
     checked.tag(cb) = sprintf('popupmenu%d', cb);
     checked.value(cb) = get(eval(sprintf('data.popupmenu%d',cb)),'Value');
@@ -1208,6 +1209,75 @@ function popupmenu13_Callback(hObject, eventdata, handles)
 % --- Executes during object creation, after setting all properties.
 function popupmenu13_CreateFcn(hObject, eventdata, handles)
 % hObject    handle to popupmenu13 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: popupmenu controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+
+
+% --- Executes on selection change in popupmenu14.
+function popupmenu14_Callback(hObject, eventdata, handles)
+% hObject    handle to popupmenu14 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: contents = cellstr(get(hObject,'String')) returns popupmenu14 contents as cell array
+%        contents{get(hObject,'Value')} returns selected item from popupmenu14
+
+
+% --- Executes during object creation, after setting all properties.
+function popupmenu14_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to popupmenu14 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: popupmenu controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+
+
+% --- Executes on selection change in popupmenu15.
+function popupmenu15_Callback(hObject, eventdata, handles)
+% hObject    handle to popupmenu15 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: contents = cellstr(get(hObject,'String')) returns popupmenu15 contents as cell array
+%        contents{get(hObject,'Value')} returns selected item from popupmenu15
+
+
+% --- Executes during object creation, after setting all properties.
+function popupmenu15_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to popupmenu15 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: popupmenu controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+
+
+% --- Executes on selection change in popupmenu16.
+function popupmenu16_Callback(hObject, eventdata, handles)
+% hObject    handle to popupmenu16 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: contents = cellstr(get(hObject,'String')) returns popupmenu16 contents as cell array
+%        contents{get(hObject,'Value')} returns selected item from popupmenu16
+
+
+% --- Executes during object creation, after setting all properties.
+function popupmenu16_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to popupmenu16 (see GCBO)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    empty - handles not created until after all CreateFcns called
 
