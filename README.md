@@ -14,7 +14,7 @@ The EegWorkflowApp is the AppDesigner version of the GUIDE based EegWorkflow.
 
 ### Install
 Install EEGLAB
-From the EEGLAB window, do manage extensions. Install
+From the EEGLAB window, choose manage extensions. Install:
 - Biosig data import
 - BDFimport (data import)
 - neuroscanio (data import)
