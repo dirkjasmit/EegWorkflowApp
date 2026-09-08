@@ -12,6 +12,21 @@ The batch button allows automated batch processing using the settings as visible
 The EegWorkflowApp is the AppDesigner version of the GUIDE based EegWorkflow.
 
 
+### Install
+Install EEGLAB
+From the EEGLAB window, do manage extensions. Install
+- biosig data import
+- BDF data import
+- IClabel
+- ANT Neuro eeprobe data import
+- Clean rawdata
+
+For faster ICA decomposition, install binica.
+
+Download the full github.
+
+To run, start the appdesigner, open the guiEegAutoflow_App.mlapp and click the RUN button
+
 
 ## Copyright statements for included code
 
