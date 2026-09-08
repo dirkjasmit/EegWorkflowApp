@@ -15,11 +15,15 @@ The EegWorkflowApp is the AppDesigner version of the GUIDE based EegWorkflow.
 ### Install
 Install EEGLAB
 From the EEGLAB window, do manage extensions. Install
-- biosig data import
-- BDF data import
+- Biosig data import
+- BDFimport (data import)
+- neuroscanio (data import)
+- ANTeepimport (data import)
 - IClabel
-- ANT Neuro eeprobe data import
-- Clean rawdata
+- clean_rawdata
+- PICARD
+- firfilt
+- AAR
 
 For faster ICA decomposition, install binica.
 
