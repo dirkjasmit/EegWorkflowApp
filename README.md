@@ -16,8 +16,8 @@ The EegWorkflowApp is the AppDesigner version of the GUIDE based EegWorkflow. Th
 ## version 1.0 (Legacy)
 Find the legacy version with the old layout here https://github.com/dirkjasmit/EegWorkflowApp/tree/Legacy
 features:
-- manual or batch processing of EEG data files in various formats
-- flexible batch processing order
+- Manual or batch processing of EEG data files in various formats
+- Flexible batch processing order
 - Batch and manual processing share settings visible in the main window.
 - Settings are saved on close (wait for the old settings to reappear after opening! Takes a while.)
 - Tracking power values for each channel after each step in EEG.etc.<Power>
