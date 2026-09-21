@@ -76,8 +76,9 @@ if ~isempty(noise)
     if size(noise,1)~=size(data,1)
         error('Noise and data matrices must have the same number of rows')
     end
-    noise = Normalize(noise);
-    data = Normalize(data);
+    % z-score every column, ignoring NaNs
+    noise = (noise - mean(noise,1,'omitnan')) ./ std(noise,0,1,'omitnan');
+    data  = (data  - mean(data, 1,'omitnan')) ./ std(data, 0,1,'omitnan');
 end
 
 % Defining window sizes to be log-linearly increasing. d1 and d2 define the
