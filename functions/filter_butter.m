@@ -75,36 +75,39 @@ if isstruct(Data) && isfield(Data,'nbchan')
 else
 
     % Define filter characteristics:
+    % designfilt band* designs require an even FilterOrder; coerce & warn.
+    band_order = butter_order;
+    if mod(band_order,2) ~= 0
+        band_order = band_order + 1;
+        warning('filter_butter: band filter order must be even; using %d.', band_order);
+    end
+
     if isempty(hp) || hp==0
+        % lowpass: cutoff is lp (the -3 dB HalfPowerFrequency, single-pass)
         d = designfilt('lowpassiir', 'FilterOrder', butter_order, ...
-               'HalfPowerFrequency1', 1,  ...
+               'HalfPowerFrequency', lp,  ...
                'SampleRate', fs, 'DesignMethod', 'butter');
-        % [z,p,k] = butter(butter_order, lp/(fs/2), 'low');
         if stopband
             warning('Stopband defined without hp defined. Ignoring stopband.')
         end
     elseif isempty(lp) || lp==0
+        % highpass: cutoff is hp
         d = designfilt('highpassiir', 'FilterOrder', butter_order, ...
-               'HalfPowerFrequency1', 1,  ...
+               'HalfPowerFrequency', hp,  ...
                'SampleRate', fs, 'DesignMethod', 'butter');
-        %[z,p,k] = butter(butter_order, hp/(fs/2), 'high');
         if stopband
             warning('Stopband defined without lp defined. Ignoring stopband.')
         end
     elseif ~stopband
-%        d = designfilt('bandpassiir','designmethod','butter','passbandfrequency',[hp lp],'samplerate',fs,'filterorder',butter_order);
-%        d = designfilt('bandpassiir', 'FilterOrder', butter_order, ...
-%               'PassbandFrequency1', 1,  'PassbandFrequency2', 45,...
-%               'SampleRate', fs, 'DesignMethod', 'butter');
-        d = designfilt('bandpassiir', 'FilterOrder', butter_order, ...
+        % bandpass: -3 dB edges at hp and lp
+        d = designfilt('bandpassiir', 'FilterOrder', band_order, ...
                'HalfPowerFrequency1', hp, 'HalfPowerFrequency2', lp, ...
                'SampleRate', fs, 'DesignMethod', 'butter');
-        %[z,p,k] = butter(butter_order, [hp lp]/(fs/2));
     else
-        d = designfilt('bandstopiir', 'FilterOrder', butter_order, ...
-               'HalfPowerFrequency1', 1, 'HalfPowerFrequency2', 45, ...
+        % bandstop (notch): -3 dB edges at hp and lp (as passed by the caller)
+        d = designfilt('bandstopiir', 'FilterOrder', band_order, ...
+               'HalfPowerFrequency1', hp, 'HalfPowerFrequency2', lp, ...
                'SampleRate', fs, 'DesignMethod', 'butter');
-        % [z,p,k] = butter(butter_order, [hp lp]/(fs/2), 'stop');
     end
     
     if plotresponse 

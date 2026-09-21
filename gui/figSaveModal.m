@@ -71,15 +71,15 @@ end
 % get data object and start filling
 data = guidata(hObject);
 
-data.INIDIR = varargin{4};
-if data.INIDIR(1)=='~'
-    data.INIDIR = sprintf("%s%s", getenv('HOME'), data.INIDIR(2:end)); 
+data.SETTINGSDIR = varargin{4};
+if data.SETTINGSDIR(1)=='~'
+    data.SETTINGSDIR = sprintf("%s%s", getenv('HOME'), data.SETTINGSDIR(2:end)); 
 end
 
 % set the values of the uicontrols, including the save path
 try
-    FN = sprintf('%s/%s.ini', data.INIDIR, get(hObject,'name'));
-    opts = detectImportOptions(FN, 'TextType', 'string', 'filetype', 'text');
+    FN = sprintf('%s/%s.ini', data.SETTINGSDIR, get(hObject,'name'));
+    opts = detectImportOptions(FN, 'TextType', 'string', 'filetype', 'text', 'Delimiter', '\t');  % tab only: paths may contain spaces
     opts.DataLines = [2 Inf];
     opts.VariableTypes(:) = {'string'};  % Force all columns to string
     strlist = readtable(FN, opts);
@@ -512,7 +512,7 @@ data = guidata(hObject);
 
 try
     strlist = GetUIControlData(hObject);
-    writetable(strlist, sprintf('%s/%s.ini', data.INIDIR, get(hObject,'name')), 'delimiter','\t', 'filetype','text')
+    writetable(strlist, sprintf('%s/%s.ini', data.SETTINGSDIR, get(hObject,'name')), 'delimiter','\t', 'filetype','text')
 catch E
     warning('An error occured on closing');
 end

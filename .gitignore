@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# MATLAB
+*.asv
+*.m~
+*.mex*
+slprj/
+
+# ICA scratch files (binica writes these next to the data)
+binica*.sc
+binica*.sph
+binica*.wts
+bias_after_adjust
+temp.fdt
+temp.set
+
+# app state written at run time
+*.ini
+.chanlocs.mat

@@ -1,6 +1,10 @@
-% EEG_INTERP - interpolate data channels
+% EEG_INTERP_FASTER - interpolate data channels. Same interface and results
+%                     as EEGLAB's eeg_interp (up to rounding), but faster:
+%                     vectorised spline application and a Legendre
+%                     recurrence. Renamed so it no longer shadows EEGLAB's
+%                     eeg_interp (and pop_interp) when on the path.
 %
-% Usage: EEGOUT = eeg_interp(EEG, badchans, method, t_range);
+% Usage: EEGOUT = eeg_interp_faster(EEG, badchans, method, t_range);
 %
 % Inputs: 
 %     EEG      - EEGLAB dataset
@@ -71,10 +75,10 @@
 % ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
 % THE POSSIBILITY OF SUCH DAMAGE.
 
-function EEG = eeg_interp(ORIEEG, bad_elec, method, t_range, params)
+function EEG = eeg_interp_faster(ORIEEG, bad_elec, method, t_range, params)
 
     if nargin < 2
-        help eeg_interp;
+        help eeg_interp_faster;
         return;
     end
     EEG = ORIEEG;
