@@ -622,6 +622,9 @@ classdef EegCallbacks
                 case 'M1/M2', [tmp, cmd] = pop_reref(tmp, find(ismember(upper({tmp.chanlocs.labels}),{'M1','M2'})));
                 case 'AVERAGE'
                     [tmp, cmd] = EegCallbacks.averageReference(app, tmp, P('rereference','interpremoved'));
+                case 'ROBUST AVERAGE (PREP)'
+                    [tmp, cmd] = EegCallbacks.robustReference(app, event, tmp, P);
+                    if isempty(tmp), return; end
                 case 'REST'
                     tmp = eeg_REST_reref(tmp);
                     cmd = 'eeg_REST_reref(tmp);';
@@ -885,6 +888,7 @@ classdef EegCallbacks
             if isempty(goodchans), goodchans = 1:tmp.nbchan; end
             npca = min(16, numel(goodchans));
             icatype = EegCallbacks.icaType(app);
+            scratch = EegCallbacks.binicaFiles();
             try
                 if strcmpi(icatype,'jader')
                     warning('using the JADER ICA algorithm. Ncomps/ PCA not used')
@@ -895,6 +899,7 @@ classdef EegCallbacks
             catch
                 tmp = pop_runica(tmp,'icatype','runica','extended',1,'pca',npca,'chanind',goodchans);
             end
+            EegCallbacks.cleanBinica(app, scratch);
             if isempty(tmp.icaact)
                 EegCallbacks.AddToListbox(app, app.listboxStdout, ' Recalculate ICA activations.');
                 tmp.icaact=icaact(tmp.data(tmp.icachansind,:), tmp.icaweights*tmp.icasphere);
@@ -943,6 +948,7 @@ classdef EegCallbacks
                 return
             end
             icatype = EegCallbacks.icaType(app);
+            scratch = EegCallbacks.binicaFiles();
             try
                 if strcmpi(icatype,'jader')
                     warning('using the JADER ICA algorithm. Ncomps/ PCA not used')
@@ -953,6 +959,7 @@ classdef EegCallbacks
             catch
                 [tmp, cmd] = pop_runica(tmp,'icatype','runica','extended',1,'pca',12); %#ok<ASGLU>
             end
+            EegCallbacks.cleanBinica(app, scratch);
             if isempty(tmp.icaact)
                 EegCallbacks.AddToListbox(app, app.listboxStdout, '- Recalculate ICA activations.');
                 tmp.icaact = icaact(tmp.data(tmp.icachansind,:), tmp.icaweights*tmp.icasphere);
@@ -2359,36 +2366,31 @@ classdef EegCallbacks
             off = '0'; on = '1';
             switch lower(name)
                 case 'prep'
-                    % Bigdely-Shamlo et al. 2015: line noise, then a robust
-                    % average reference built on bad-channel detection
-                    % (deviation, correlation, HF noise, RANSAC).
-                    P.steps = {'Lookup', 'Remove ~EEG', 'Flatline', 'Cleanline', ...
-                               'Bad channels', 'Rereference'};
+                    % Bigdely-Shamlo et al. 2015, in the order of
+                    % prepPipeline.m: detrend (for the computation only),
+                    % line noise, then bad channels + robust average
+                    % reference in one call. That call is PREP's own
+                    % performReference, put in the Execute code box, so the
+                    % result is exactly the plugin's (it must be installed).
+                    P.steps = {'Lookup', 'Remove ~EEG', 'Cleanline', 'Execute code'};
                     P.settings = {
                         'lookup', 'locs', 'Standard'
                         'lookup', 'addref', 'none'
                         'cleanline', 'method', 'CleanLine'
-                        'cleanline', 'harmonics', on
-                        'excessive signal', 'use_z', on
-                        'excessive signal', 'excessive_z', '5'
-                        'excessive signal', 'use_sd', off
-                        'excessive signal', 'use_flatline', off
-                        'excessive signal', 'use_minr', off
-                        'excessive signal', 'use_noise', off
-                        'excessive signal', 'use_drift', on
-                        'excessive signal', 'drift', '0.75-1.25'
-                        'excessive signal', 'use_ransac', on
-                        'excessive signal', 'ransac_r', '0.75'
-                        'excessive signal', 'ransac_maxbad', '0.4'
-                        'excessive signal', 'ransac_window', '5'
-                        'excessive signal', 'ransac_draws', '50'
-                        'excessive signal', 'ransac_fraction', '0.25'
-                        'rereference', 'refchans', 'Average'
-                        'rereference', 'interpremoved', on };
+                        'cleanline', 'harmonics', on };
                     P.controls = struct();
+                    P.needsPrep = true;
+                    P.code = {
+                        '% PREP bad channels + robust average reference (PrepPipeline plugin)'
+                        'eegchans = find(~cellfun(@isempty, {EEG.chanlocs.X}));'
+                        '[EEG, prepref] = performReference(EEG, struct(''referenceChannels'', eegchans, ...'
+                        '    ''evaluationChannels'', 1:EEG.nbchan, ''rereferencedChannels'', 1:EEG.nbchan));'
+                        'EEG.etc.prepReference = prepref;'
+                        'disp([''PREP bad channels: '' strjoin({EEG.chanlocs(prepref.badChannels.all).labels}, '' '')]);' };
                     P.notes = {
-                        'PREP: line noise at all harmonics (CleanLine), bad channels by deviation (z > 5) and RANSAC (r < 0.75 in > 40% of 5 s windows), average reference with the removed channels interpolated for the reference'
-                        'differences: PREP high-passes at 1 Hz for the detection only (here a 0.75-1.25 Hz drift high-pass that stays on the data), PREP''s correlation and HF-noise tests are not included, and PREP keeps the interpolated channels in the output (here they stay removed)' };
+                        'PREP: line noise at all harmonics (CleanLine), then PREP''s own performReference in the Execute code box: bad channels (deviation, correlation, HF noise, RANSAC), robust average reference, bad channels interpolated'
+                        'the Execute code box now holds that call; it assumes every channel is an EEG channel with a location, which is why Remove ~EEG comes first'
+                        'to use the app''s own version instead, replace the Execute code step by Rereference with Robust average (PREP)' };
                 case 'autoreject'
                     % Jas et al. 2017, in the order of the MNE tutorials:
                     % filter, average reference, local autoreject on 1 s epochs.
@@ -2467,6 +2469,21 @@ classdef EegCallbacks
             data = guidata(hObject);
             say = @(varargin) EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf(varargin{:}));
             P = EegCallbacks.pipelinePreset(name);
+            if isfield(P, 'needsPrep') && P.needsPrep
+                % fail here, at the click, not halfway through a batch run
+                prepdir = fileparts(which('eegplugin_prepPipeline'));
+                if isempty(prepdir)
+                    error('EegCallbacks:noPrepPlugin', ['The %s preset runs the PrepPipeline plugin, ' ...
+                        'which is not installed. Install it in EEGLAB (File > Manage EEGLAB extensions > ' ...
+                        'PrepPipeline), or use Rereference with ''Robust average (PREP)'' instead.'], name);
+                end
+                addpath(genpath(prepdir));      % its functions live in subfolders
+                if isempty(which('performReference'))
+                    error('EegCallbacks:noPrepPlugin', ...
+                        'PrepPipeline was found in %s, but performReference is missing from it.', prepdir);
+                end
+                say('- PrepPipeline plugin found (%s) and added to the path', prepdir);
+            end
             for k = 1:size(P.settings, 1)
                 data.params = EegParams.set(data.params, P.settings{k,1}, P.settings{k,2}, P.settings{k,3});
             end
@@ -2481,6 +2498,13 @@ classdef EegCallbacks
                         ctl.Value = P.controls.(fn{k});
                     end
                 catch
+                end
+            end
+            if isfield(P, 'code') && ~isempty(P.code)
+                try
+                    app.textareaExecuteCode.Value = P.code;
+                catch
+                    say(' *** warning *** could not fill the Execute code box');
                 end
             end
             guidata(hObject, data);
@@ -2825,6 +2849,117 @@ classdef EegCallbacks
         end
 
         % ------------------------------------------------------------------
+        % PREP's robust average reference (eeg_robustref): the average is
+        % taken over the channels with the bad ones interpolated, repeating
+        % detection and referencing until the bad set is stable. Returns an
+        % empty EEG when it could not run; the caller then returns.
+        function [EEG, cmd] = robustReference(app, event, EEG, P)
+            say = @(varargin) EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf(varargin{:}));
+            cmd = '';
+            if EEG.trials > 1
+                EegCallbacks.abortStep(app, event, 'The robust average reference needs continuous data.');
+                EEG = [];
+                return
+            end
+            % every channel must have a location: the robust reference
+            % interpolates the bad ones, and a channel without a location can
+            % neither be interpolated nor predict the others
+            noLoc = find(cellfun(@isempty, {EEG.chanlocs.X}));
+            if ~isempty(noLoc)
+                EegCallbacks.abortStep(app, event, sprintf( ...
+                    ['%d channels have no location (%s): the robust average reference cannot ' ...
+                     'interpolate them. Run Lookup, or remove them with Rm ~EEG ch, first'], ...
+                    numel(noLoc), strjoin({EEG.chanlocs(noLoc).labels}, ' ')));
+                EEG = [];
+                return
+            end
+            chans = EegPeriods.eegChannels(EEG);
+            say('- robust average (PREP): up to %d rounds on %d channels; tests: deviation z %s, min r %s, HF noise z %s, RANSAC %s', ...
+                P('rereference','robustiter'), numel(chans), ...
+                ifthen(P('rereference','robustdev') > 0, sprintf('%.1f', P('rereference','robustdev')), 'off'), ...
+                ifthen(P('rereference','robustcorr') > 0, sprintf('%.2f', P('rereference','robustcorr')), 'off'), ...
+                ifthen(P('rereference','robusthf') > 0, sprintf('%.1f', P('rereference','robusthf')), 'off'), ...
+                ifthen(P('rereference','robustransac'), 'on', 'off'));
+            try
+                [EEG, info] = eeg_robustref(EEG, 'Channels', chans, ...
+                    'MaxIterations', P('rereference','robustiter'), ...
+                    'Deviation', P('rereference','robustdev'), ...
+                    'Correlation', P('rereference','robustcorr'), ...
+                    'HighFrequency', P('rereference','robusthf'), ...
+                    'Ransac', logical(P('rereference','robustransac')), ...
+                    'InterpolateBad', logical(P('rereference','robustinterp')));
+            catch E
+                EegCallbacks.abortStep(app, event, E.message);
+                EEG = [];
+                return
+            end
+            if isempty(info.bad)
+                say('  %d rounds, no bad channels: the average over all channels', info.iterations);
+            else
+                say('  %d rounds, %d channels left out of the average%s: %s', info.iterations, numel(info.bad), ...
+                    ifthen(info.interpolated, ' (and interpolated in the data)', ''), strjoin(info.labels, ' '));
+                t = info.tests;
+                say('  found by: deviation %s | correlation %s | HF noise %s | RANSAC %s', ...
+                    EegCallbacks.labelList(EEG, t.deviation), EegCallbacks.labelList(EEG, t.correlation), ...
+                    EegCallbacks.labelList(EEG, t.highFrequency), EegCallbacks.labelList(EEG, t.ransac));
+            end
+            cmd = sprintf('%% eeg_robustref: robust average reference, %d rounds, %d bad channels', ...
+                info.iterations, numel(info.bad));
+        end
+
+        % ------------------------------------------------------------------
+        % Channel labels of an index list, for the output pane ('-' if empty).
+        function s = labelList(EEG, idx)
+            if isempty(idx)
+                s = '-';
+            else
+                s = strjoin({EEG.chanlocs(idx).labels}, ' ');
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % Scratch files binica leaves behind: binica<n>.sc/.fdt/.wts/.sph/
+        % .inwts, binicatmp<n>.wts and the binary's bias_after_adjust. binica
+        % always writes them in the CURRENT folder (see binica.m: fullfile(pwd,
+        % ...)), which is wherever MATLAB happens to be, so they are listed
+        % before a run (binicaFiles) and only the files that appeared during
+        % it are deleted afterwards (cleanBinica). Nothing else is touched,
+        % and files from an ICA still running elsewhere are left alone.
+        function list = binicaFiles()
+            pats = {'binica*.sc', 'binica*.fdt', 'binica*.wts', 'binica*.sph', ...
+                    'binica*.inwts', 'binicatmp*', 'bias_after_adjust'};
+            list = {};
+            for k = 1:numel(pats)
+                d = dir(fullfile(pwd, pats{k}));
+                d = d(~[d.isdir]);
+                list = [list, cellfun(@(n) fullfile(pwd, n), {d.name}, 'UniformOutput', false)]; %#ok<AGROW>
+            end
+            list = unique(list);
+        end
+
+        % ------------------------------------------------------------------
+        % Delete the binica scratch files that appeared since the list 'before'
+        % was taken. Returns how many were removed.
+        function n = cleanBinica(app, before)
+            n = 0;
+            fresh = setdiff(EegCallbacks.binicaFiles(), before);
+            bytes = 0;
+            for k = 1:numel(fresh)
+                d = dir(fresh{k});
+                try
+                    delete(fresh{k});
+                    n = n + 1;
+                    if ~isempty(d), bytes = bytes + d(1).bytes; end
+                catch
+                end
+            end
+            if n > 0
+                EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf( ...
+                    '- removed %d binica scratch file(s), %.1f MB, from %s', n, bytes/1e6, pwd));
+            end
+        end
+
+        % ------------------------------------------------------------------
         % Full path of a file in resources/ or datasets/ next to the repository
         % root (this class lives in code/). Data files, unlike code, are not
         % found through the MATLAB path, so every channel-location file and
@@ -3130,6 +3265,7 @@ classdef EegCallbacks
                 [Q, ~] = qr(randn(ncomps));
                 extra = {'w_init', Q};
             end
+            scratch = EegCallbacks.binicaFiles();
             try
                 if strcmpi(icatype,'jader')
                     warning('using the JADER ICA algorithm. Ncomps/ PCA not used')
@@ -3142,6 +3278,7 @@ classdef EegCallbacks
                     ' *** warning *** %s failed (%s); using extended runica', icatype, E.message));
                 [EEG, cmd] = pop_runica(EEG, 'icatype', 'runica', 'extended', 1, 'pca', ncomps, 'chanind', goodchans);
             end
+            EegCallbacks.cleanBinica(app, scratch);
         end
 
         % ------------------------------------------------------------------
