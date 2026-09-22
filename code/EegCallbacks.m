@@ -2264,6 +2264,10 @@ classdef EegCallbacks
         function pushbuttonIntCleanButtonPushed(app, event)
             data = guidata(app.eeg_workflow);
             method = EegParams.get(data.params, 'interpolation clean', 'method');
+            if strcmpi(method, 'Autoreject')
+                EegCallbacks.runAutoreject(app, event);
+                return
+            end
             if strcmpi(method, 'RANSAC')
                 how = sprintf('RANSAC prediction, median of %d subsets of %.0f%% of the channels', ...
                     EegParams.get(data.params, 'interpolation clean', 'ransac_draws'), ...
@@ -3161,6 +3165,89 @@ classdef EegCallbacks
             data.EEG = EEG;
             guidata(hObject, data);
             data.EEG = EegCallbacks.recordPower(app, data.EEG, powerTag);
+            guidata(hObject, data);
+        end
+
+        % ------------------------------------------------------------------
+        % Interpolation Clean with Method Autoreject (eeg_autoreject, Jas et
+        % al. 2017): per-channel peak-to-peak thresholds by cross-validation,
+        % bad channels interpolated within their epoch, epochs with too many
+        % bad channels removed (as periods, with the merge gap). Epochs do
+        % not overlap, because repaired cells are written back into the data.
+        function runAutoreject(app, event)
+            hObject = app.eeg_workflow;
+            data = guidata(hObject);
+            say = @(varargin) EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf(varargin{:}));
+            if ~isfield(data,'EEG') || isempty(data.EEG.data)
+                EegCallbacks.abortStep(app, event, 'No data available');
+                return
+            end
+            if data.EEG.trials > 1
+                EegCallbacks.abortStep(app, event, 'Autoreject here works on continuous data.');
+                return
+            end
+            P = @(p) EegParams.get(data.params, 'interpolation clean', p);
+            EEG   = data.EEG;
+            chans = EegPeriods.eegChannels(EEG);
+            ep    = EegPeriods.epochs(EEG, P('epochlen'), 0);
+            say('Autoreject (Jas et al. 2017): peak-to-peak thresholds per channel, %d-fold cross-validation', P('ar_folds'));
+            say('- %d channels (located, not *eog*), %d epochs of %.2f s without overlap%s', numel(chans), ep.n, ...
+                ep.len/EEG.srate, ifthen(P('overlap') > 0, ' (the overlap setting is not used)', ''));
+            try
+                [EEG, ar] = eeg_autoreject(EEG, 'Channels', chans, 'Epochs', [ep.start ep.stop], ...
+                    'Folds', P('ar_folds'));
+            catch E
+                EegCallbacks.abortStep(app, event, E.message);
+                return
+            end
+            nCells = nnz(ar.repaired);
+            say('- thresholds %.0f-%.0f (median %.0f) peak-to-peak; %d of %d cells above them', ...
+                min(ar.thresholds), max(ar.thresholds), median(ar.thresholds), nnz(ar.bad), numel(ar.bad));
+            say('- learned: drop an epoch when more than %.0f%% of the channels are bad (kappa %.1f); otherwise interpolate up to %d channels (rho)', ...
+                100*ar.kappa, ar.kappa, ar.rho);
+            say('- interpolated %d channel-epochs in %d epochs; %d epochs to remove', ...
+                nCells, nnz(any(ar.repaired, 1)), nnz(ar.dropped));
+            worst = sum(ar.repaired, 2)' / ep.n;
+            [w, o] = sort(worst, 'descend');
+            o = o(w > 0.2);
+            if ~isempty(o)
+                say('  interpolated in more than 20%% of the epochs: %s', strjoin(arrayfun(@(k) ...
+                    sprintf('%s (%.0f%%)', EEG.chanlocs(chans(k)).labels, 100*worst(k)), o, 'uni', 0), ' '));
+            end
+
+            gap = round(P('mergegap') * EEG.srate);
+            D = struct('badChans', false(1, numel(chans)), 'extraChans', false(1, numel(chans)), ...
+                'regions', EegPeriods.mergeRegions([ep.start(ar.dropped) ep.stop(ar.dropped)], EEG.pnts, gap), ...
+                'remain', 1 - nnz(ar.dropped)*ep.len/EEG.pnts);
+            D = EegPeriods.absorbShortIslands(D, EEG, gap);
+            if ~isempty(D.regions)
+                D.remain = 1 - sum(D.regions(:,2) - D.regions(:,1) + 1) / EEG.pnts;
+            end
+            if D.remain < 0.05
+                EegCallbacks.abortStep(app, event, sprintf( ...
+                    'only %.0f%% of the data would remain; nothing changed', 100*D.remain));
+                return
+            end
+            if nCells == 0 && isempty(D.regions)
+                say('- nothing to repair or remove');
+                return
+            end
+            if D.islands > 0
+                say('- including %d stretches shorter than %g s left between boundaries/removed periods', ...
+                    D.islands, P('mergegap'));
+            end
+            if ~isempty(D.regions)
+                say('- removing %d periods, %.1f s (%.0f%% of the data remains)', ...
+                    size(D.regions,1), (1-D.remain)*EEG.pnts/EEG.srate, 100*D.remain);
+            end
+            EEG.history = [EEG.history newline sprintf( ...
+                '%% eeg_autoreject: %d channel-epochs interpolated (kappa %.1f, rho %d, %d folds)', ...
+                nCells, ar.kappa, ar.rho, P('ar_folds'))];
+            EEG = EegPeriods.apply(EEG, chans, D);
+            data = EegCallbacks.pushUndo(app, event, data, data.EEG, EegCallbacks.callerStepName());
+            data.EEG = EEG;
+            guidata(hObject, data);
+            data.EEG = EegCallbacks.recordPower(app, data.EEG, 'InterpolationCleaning');
             guidata(hObject, data);
         end
 
