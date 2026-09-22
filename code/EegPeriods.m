@@ -212,16 +212,28 @@ classdef EegPeriods
         % Interpolation: the recorded and interpolated signal correlate
         % below rcrit, or the SD of their difference (scaled to the median
         % over all channels and epochs) exceeds sdcrit.
-        function M = maskInterpolation(EEG, chans, ep, sdcrit, rcrit)
-            imp = EegPeriods.interpolated(EEG, chans);
-            R  = zeros(numel(chans), ep.n);
-            SD = R;
-            for e = 1:ep.n
-                idx  = ep.start(e):ep.stop(e);
-                real = detrend(double(EEG.data(chans, idx))');
-                surr = detrend(double(imp(:, idx))');
-                R(:, e)  = diag(corr(surr, real));
-                SD(:, e) = std(surr - real)';
+        % method 'Leave-one-out' predicts each channel from all other
+        % channels (eeg_fastinterpolate); 'RANSAC' uses the median over
+        % random channel subsets (eeg_ransac, PREP). The tests are the same:
+        % per epoch, detrended recorded vs predicted signal, Pearson r below
+        % rcrit or SD of the difference above sdcrit times its median.
+        function M = maskInterpolation(EEG, chans, ep, sdcrit, rcrit, method, draws, fraction)
+            if nargin >= 6 && strcmpi(method, 'RANSAC')
+                [R, info] = eeg_ransac(EEG, 'Channels', chans, ...
+                    'Windows', [ep.start(:), ep.stop(:)], 'Draws', draws, ...
+                    'Fraction', fraction, 'Style', 'detrend');
+                SD = info.sd;
+            else
+                imp = EegPeriods.interpolated(EEG, chans);
+                R  = zeros(numel(chans), ep.n);
+                SD = R;
+                for e = 1:ep.n
+                    idx  = ep.start(e):ep.stop(e);
+                    real = detrend(double(EEG.data(chans, idx))');
+                    surr = detrend(double(imp(:, idx))');
+                    R(:, e)  = diag(corr(surr, real));
+                    SD(:, e) = std(surr - real)';
+                end
             end
             SD = SD ./ median(SD(:));
             M = R < rcrit | SD > sdcrit;

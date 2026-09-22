@@ -453,7 +453,9 @@ classdef EegCallbacks
             % for its bad-channel pass (flatline, correlation, line noise, drift
             % highpass; thresholds default to DISCOVER-EEG's), or any mix.
             % The clean_rawdata tests run first; the SD tests then run on what
-            % is left (after the drift highpass, when that is on).
+            % is left (after the drift highpass, when that is on). RANSAC (PREP's
+            % bad-channel test, eeg_ransac) runs last, as in PREP: channels the
+            % other tests removed are no longer used to predict the others.
             hObject = app.eeg_workflow;
             data = guidata(hObject);
             P = @(p) EegParams.get(data.params, 'excessive signal', p);
@@ -520,6 +522,15 @@ classdef EegCallbacks
             if any(bad)
                 [tmp, cmd] = pop_select(tmp, 'nochannel', find(bad));
                 tmp.history = [tmp.history newline cmd];
+            end
+
+            % ---- RANSAC (PREP) ------------------------------------------------
+            if P('use_ransac')
+                hit = EegCallbacks.ransacBadChannels(app, tmp, P);
+                if ~isempty(hit)
+                    [tmp, cmd] = pop_select(tmp, 'nochannel', hit);
+                    tmp.history = [tmp.history newline cmd];
+                end
             end
 
             gone = setdiff(before, {tmp.chanlocs.labels}, 'stable');
@@ -1096,9 +1107,11 @@ classdef EegCallbacks
 
                 otherwise   % eeg_linenoise
                     L = P('segmentlength');
-                    say('Removing line noise with eeg_linenoise at %s Hz, %g s pieces', fstr, L);
+                    say('Removing line noise with eeg_linenoise at %s Hz, pieces of about %g s%s', ...
+                        fstr, L, ifthen(P('drift'), ', frequency drift fitted', ''));
                     [tmp, info] = eeg_linenoise(tmp, 'LineFreq', f0, 'Harmonics', mult, ...
-                        'SegmentLength', L, 'MinPeakDb', P('minpeak'), 'Verbose', false);
+                        'SegmentLength', L, 'MinPeakDb', P('minpeak'), 'Drift', logical(P('drift')), ...
+                        'Verbose', false);
                     for f = unique([info.nominal])
                         k    = [info.nominal] == f;
                         done = k & ~[info.skipped];
@@ -2249,10 +2262,19 @@ classdef EegCallbacks
 
         % Button pushed function: pushbuttonIntClean
         function pushbuttonIntCleanButtonPushed(app, event)
+            data = guidata(app.eeg_workflow);
+            method = EegParams.get(data.params, 'interpolation clean', 'method');
+            if strcmpi(method, 'RANSAC')
+                how = sprintf('RANSAC prediction, median of %d subsets of %.0f%% of the channels', ...
+                    EegParams.get(data.params, 'interpolation clean', 'ransac_draws'), ...
+                    100*EegParams.get(data.params, 'interpolation clean', 'ransac_fraction'));
+            else
+                how = 'leave-one-out prediction from all other channels';
+            end
             EegCallbacks.runPeriods(app, event, 'interpolation clean', ...
-                'Removing channels/periods that differ from their interpolation.', ...
+                sprintf('Removing channels/periods that differ from their interpolation (%s).', how), ...
                 @(EEG, chans, ep, P) EegPeriods.maskInterpolation(EEG, chans, ep, ...
-                    P('sdcrit'), P('rcrit')), ...
+                    P('sdcrit'), P('rcrit'), P('method'), P('ransac_draws'), P('ransac_fraction')), ...
                 'InterpolationCleaning');
         end
 
@@ -2601,6 +2623,50 @@ classdef EegCallbacks
         %   Windows  %APPDATA%\Matlab_EegAutoFlow
         %   macOS    ~/Library/Application Support/Matlab_EegAutoFlow
         %   Linux    $XDG_CONFIG_HOME/Matlab_EegAutoFlow (default ~/.config)
+        % ------------------------------------------------------------------
+        % RANSAC bad-channel test of the Bad chans button, as PREP's
+        % findNoisyChannels: a channel is bad when it correlates below
+        % ransac_r with its RANSAC prediction (eeg_ransac) in more than
+        % ransac_maxbad of the recording. Tested and used as predictors: the
+        % located channels not named *eog*, without flat ones. Returns the
+        % indices of the bad channels in EEG; removing them is the caller's.
+        function hit = ransacBadChannels(app, EEG, P)
+            say = @(varargin) EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf(varargin{:}));
+            hit = [];
+            rc = EegPeriods.eegChannels(EEG);
+            flat = std(double(EEG.data(rc, :)), [], 2)' < 1e-9;
+            if any(flat)
+                say('  *** warning *** RANSAC skips %d flat channels (%s): run Flatline first', ...
+                    sum(flat), strjoin({EEG.chanlocs(rc(flat)).labels}, ' '));
+                rc = rc(~flat);
+            end
+            say('- RANSAC (PREP): r < %.2f in more than %.0f%% of %g s windows; median of %d subsets of %.0f%% of %d channels', ...
+                P('ransac_r'), 100*P('ransac_maxbad'), P('ransac_window'), P('ransac_draws'), ...
+                100*P('ransac_fraction'), numel(rc));
+            try
+                R = eeg_ransac(EEG, 'Channels', rc, 'WindowSeconds', P('ransac_window'), ...
+                    'Draws', P('ransac_draws'), 'Fraction', P('ransac_fraction'));
+            catch E
+                say('  *** warning *** RANSAC not run: %s', E.message);
+                return
+            end
+            % PREP's rule: bad windows x window length > max bad time x recording
+            badTime = sum(R < P('ransac_r'), 2)' * P('ransac_window') * EEG.srate;
+            isBad   = badTime > P('ransac_maxbad') * EEG.pnts;
+            if all(isBad)
+                say('  *** error *** every channel failed the RANSAC test; none removed');
+                return
+            end
+            hit = rc(isBad);
+            if isempty(hit)
+                say('  no channels');
+            else
+                pct = 100 * badTime(isBad) / EEG.pnts;
+                say('  %d channels: %s', numel(hit), strjoin(arrayfun(@(k, q) ...
+                    sprintf('%s (%.0f%%)', EEG.chanlocs(k).labels, q), hit, pct, 'uni', 0), ' '));
+            end
+        end
+
         % ------------------------------------------------------------------
         % Full path of a file in resources/ or datasets/ next to the repository
         % root (this class lives in code/). Data files, unlike code, are not
