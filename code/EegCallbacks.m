@@ -1170,6 +1170,17 @@ classdef EegCallbacks
                 ncomps=numel(goodchans);
                 say('Too many components selected for ICA. Taking the maximum.')
             end
+            % never more components than the data rank: an average reference
+            % (or interpolated channels) removes dimensions, and a larger PCA
+            % gives duplicate, meaningless components
+            X  = double(tmp.data(goodchans, :));
+            ev = eig(X*X' / size(X, 2));
+            rk = sum(ev > max(ev) * 1e-7);
+            clear X
+            if ncomps > rk
+                ncomps = rk;
+                say('- components limited to the data rank (%d)', rk);
+            end
             icatype = EegCallbacks.icaType(app);
             nRuns   = EegCallbacks.icaRuns(app);
             if nRuns > 1 && strcmpi(icatype, 'jader')
@@ -2335,7 +2346,149 @@ classdef EegCallbacks
             % (a uifigure cannot dispatch its own buttons while this callback
             % is still on the stack).
             EegBatch.dialog(hObject, data.SETTINGSDIR, data.DEFAULTDIR, str, ...
-                @(sel) EegCallbacks.runBatch(app, sel));
+                @(sel) EegCallbacks.runBatch(app, sel), ...
+                @(name) EegCallbacks.applyPreset(app, name));
+        end
+
+        % ------------------------------------------------------------------
+        % Pipeline presets of the batch window. Each gives the batch steps in
+        % order (labels of the batch step list), the settings of those steps,
+        % the main-window controls to set, and notes on where the emulation
+        % differs from the original pipeline.
+        function P = pipelinePreset(name)
+            off = '0'; on = '1';
+            switch lower(name)
+                case 'prep'
+                    % Bigdely-Shamlo et al. 2015: line noise, then a robust
+                    % average reference built on bad-channel detection
+                    % (deviation, correlation, HF noise, RANSAC).
+                    P.steps = {'Lookup', 'Remove ~EEG', 'Flatline', 'Cleanline', ...
+                               'Bad channels', 'Rereference'};
+                    P.settings = {
+                        'lookup', 'locs', 'Standard'
+                        'lookup', 'addref', 'none'
+                        'cleanline', 'method', 'CleanLine'
+                        'cleanline', 'harmonics', on
+                        'excessive signal', 'use_z', on
+                        'excessive signal', 'excessive_z', '5'
+                        'excessive signal', 'use_sd', off
+                        'excessive signal', 'use_flatline', off
+                        'excessive signal', 'use_minr', off
+                        'excessive signal', 'use_noise', off
+                        'excessive signal', 'use_drift', on
+                        'excessive signal', 'drift', '0.75-1.25'
+                        'excessive signal', 'use_ransac', on
+                        'excessive signal', 'ransac_r', '0.75'
+                        'excessive signal', 'ransac_maxbad', '0.4'
+                        'excessive signal', 'ransac_window', '5'
+                        'excessive signal', 'ransac_draws', '50'
+                        'excessive signal', 'ransac_fraction', '0.25'
+                        'rereference', 'refchans', 'Average'
+                        'rereference', 'interpremoved', on };
+                    P.controls = struct();
+                    P.notes = {
+                        'PREP: line noise at all harmonics (CleanLine), bad channels by deviation (z > 5) and RANSAC (r < 0.75 in > 40% of 5 s windows), average reference with the removed channels interpolated for the reference'
+                        'differences: PREP high-passes at 1 Hz for the detection only (here a 0.75-1.25 Hz drift high-pass that stays on the data), PREP''s correlation and HF-noise tests are not included, and PREP keeps the interpolated channels in the output (here they stay removed)' };
+                case 'autoreject'
+                    % Jas et al. 2017, in the order of the MNE tutorials:
+                    % filter, average reference, local autoreject on 1 s epochs.
+                    P.steps = {'Lookup', 'Remove ~EEG', 'Flatline', 'Resample', 'Cleanline', ...
+                               'Filter', 'Rereference', 'Interpolation periods'};
+                    P.settings = {
+                        'lookup', 'locs', 'Standard'
+                        'lookup', 'addref', 'none'
+                        'resample', 'srate', '250'
+                        'cleanline', 'method', 'eeg_linenoise'
+                        'filter', 'low', '1'
+                        'filter', 'high', '40'
+                        'filter', 'type', 'FIR'
+                        'rereference', 'refchans', 'Average'
+                        'rereference', 'interpremoved', off
+                        'interpolation clean', 'method', 'Autoreject'
+                        'interpolation clean', 'epochlen', '1'
+                        'interpolation clean', 'overlap', '0'
+                        'interpolation clean', 'mergegap', '0'
+                        'interpolation clean', 'ar_folds', '10' };
+                    P.controls = struct();
+                    P.notes = {
+                        'Autoreject: 1-40 Hz, average reference, then local autoreject on 1 s epochs (10-fold cross-validation of thresholds, kappa and rho): bad channels interpolated per epoch, epochs with too many bad channels removed'
+                        'autoreject itself is only the last step; eye artefacts are usually handled by ICA as well (add the ICA step before Interpolation Clean if wanted)' };
+                case 'discover-eeg'
+                    % Gil Avila et al. 2023 (params_example.json defaults).
+                    P.steps = {'Lookup', 'Remove ~EEG', 'Resample', 'Cleanline', ...
+                               'Bad channels', 'Rereference', 'ICA'};
+                    P.settings = {
+                        'lookup', 'locs', 'Standard'
+                        'lookup', 'addref', 'none'
+                        'resample', 'srate', '250'
+                        'cleanline', 'method', 'CleanLine'
+                        'cleanline', 'harmonics', off
+                        'excessive signal', 'use_z', off
+                        'excessive signal', 'use_sd', off
+                        'excessive signal', 'use_flatline', on
+                        'excessive signal', 'flatline', '5'
+                        'excessive signal', 'use_minr', on
+                        'excessive signal', 'minr', '0.8'
+                        'excessive signal', 'use_noise', on
+                        'excessive signal', 'noise', '4'
+                        'excessive signal', 'use_drift', on
+                        'excessive signal', 'drift', '0.25-0.75'
+                        'excessive signal', 'maxbadtime', '0.5'
+                        'excessive signal', 'use_ransac', off
+                        'rereference', 'refchans', 'Average'
+                        'rereference', 'interpremoved', on
+                        'ICA', 'pca', '250'
+                        'ICA', 'use_muscle', on
+                        'ICA', 'muscle', '0.8'
+                        'ICA', 'use_eye', on
+                        'ICA', 'eye', '0.8'
+                        'ICA', 'use_heart', off
+                        'ICA', 'use_linenoise', off
+                        'ICA', 'use_channoise', off
+                        'ICA', 'use_other', off
+                        'ICA', 'repburst', '20'
+                        'ICA', 'repwindow', '0.25'
+                        'ICA', 'discovereeg', on };
+                    P.controls = struct('ICAtypeDropDown', 'runica', 'ICANumberDropDown', '10');
+                    P.notes = {
+                        'DISCOVER-EEG: 250 Hz, CleanLine, clean_rawdata bad channels (flatline 5 s, r 0.8, line noise 4 SD, 0.25-0.75 Hz high-pass), average reference, 10 x runica at data rank with the most typical run kept, ICLabel Muscle/Eye >= 0.8 removed, then its bad segments (burst 20, window 0.25) removed'
+                        'difference: DISCOVER-EEG interpolates the removed channels back after ICA; here they stay removed' };
+                otherwise
+                    error('EegCallbacks:unknownPreset', 'Unknown pipeline ''%s''.', name);
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % Apply a pipeline preset (pipelinePreset): write its settings, save
+        % them, refresh the settings lists and set the main-window controls.
+        % Returns the batch steps in order, for the batch window.
+        function steps = applyPreset(app, name)
+            hObject = app.eeg_workflow;
+            data = guidata(hObject);
+            say = @(varargin) EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf(varargin{:}));
+            P = EegCallbacks.pipelinePreset(name);
+            for k = 1:size(P.settings, 1)
+                data.params = EegParams.set(data.params, P.settings{k,1}, P.settings{k,2}, P.settings{k,3});
+            end
+            data.params = EegParams.validate(data.params);
+            EegParams.save(data.params, data.SETTINGSDIR);
+            EegParams.refresh(app, data.params);
+            fn = fieldnames(P.controls);
+            for k = 1:numel(fn)
+                try
+                    ctl = app.(fn{k});
+                    if any(strcmp(ctl.Items, P.controls.(fn{k})))
+                        ctl.Value = P.controls.(fn{k});
+                    end
+                catch
+                end
+            end
+            guidata(hObject, data);
+            say('Pipeline preset %s: %d settings changed, steps %s', name, size(P.settings, 1), strjoin(P.steps, ' > '));
+            for k = 1:numel(P.notes)
+                say('- %s', P.notes{k});
+            end
+            steps = P.steps;
         end
 
         % ------------------------------------------------------------------
