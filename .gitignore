@@ -7,10 +7,8 @@
 *.mex*
 slprj/
 
-# ICA scratch files (binica writes these next to the data)
-binica*.sc
-binica*.sph
-binica*.wts
+# ICA scratch files (binica writes these in the current folder)
+binica*
 bias_after_adjust
 temp.fdt
 temp.set
