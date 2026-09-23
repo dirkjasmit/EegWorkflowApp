@@ -2918,6 +2918,41 @@ classdef EegCallbacks
         end
 
         % ------------------------------------------------------------------
+        % Append the full spectrum of this step to EEG.etc.recordPSD, one cell
+        % per step. Each cell is a struct:
+        %   .Tag       the step, as in recordPower
+        %   .freqs     (0:80)' Hz, the centres of 1 Hz bins
+        %   .psd       81 x channels, dB (10*log10 of the mean power in the
+        %              bin), frequency in the rows and channel in the columns
+        %   .channels  the channel labels of those columns
+        % The columns are the channels of the first recorded step (the first
+        % one with locations, i.e. after Lookup), so that every step has the
+        % same columns; a channel removed later leaves a column of NaN, and a
+        % channel that was not there at the start is not recorded. Bins above
+        % the Nyquist frequency stay NaN.
+        % P and fs are the spectrum pfft already computed in recordPower.
+        function EEG = recordPsd(EEG, tag, P, fs, currentLabels, refChannels)
+            fbins = (0:80)';
+            Q  = nan(numel(fbins), numel(refChannels));
+            [known, col] = ismember(currentLabels, refChannels);
+            for b = 1:numel(fbins)
+                ndx = fs >= fbins(b) - 0.5 & fs < fbins(b) + 0.5;
+                if ~any(ndx)
+                    continue                      % above Nyquist: stays NaN
+                end
+                pb = mean(P(ndx, :), 1);
+                pb(pb <= 0) = NaN;                % flat channels: no log of 0
+                Q(b, col(known)) = 10*log10(pb(known));
+            end
+            S = struct('Tag', tag, 'freqs', fbins, 'psd', Q, ...
+                'channels', {refChannels}, 'unit', 'dB (10*log10 power)');
+            if ~isfield(EEG.etc, 'recordPSD')
+                EEG.etc.recordPSD = {};
+            end
+            EEG.etc.recordPSD{end+1} = S;
+        end
+
+        % ------------------------------------------------------------------
         % Scratch files binica leaves behind: binica<n>.sc/.fdt/.wts/.sph/
         % .inwts, binicatmp<n>.wts and the binary's bias_after_adjust. binica
         % always writes them in the CURRENT folder (see binica.m: fullfile(pwd,
@@ -3922,6 +3957,8 @@ classdef EegCallbacks
                 EEG.etc.recordPower = {};
             end
             EEG.etc.recordPower{end+1} = S;
+
+            EEG = EegCallbacks.recordPsd(EEG, tag, P, fs, currentLabels, refChannels);
         end
 
         % ------------------------------------------------------------------
