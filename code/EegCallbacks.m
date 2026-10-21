@@ -235,8 +235,18 @@ classdef EegCallbacks
                         continue
                     end
                     lb = app.(name);
-                    if isempty(lb.ClickedFcn)
-                        lb.ClickedFcn = @(src, ~) EegCallbacks.ListBoxClicked(app, struct('Source', src));
+                    cb = @(src, ~) EegCallbacks.ListBoxClicked(app, struct('Source', src));
+                    % ClickedFcn fires on every click, also on the item that is
+                    % already selected. Older releases do not have it on a
+                    % listbox; ValueChangedFcn is then the next best thing (it
+                    % fires only when the selection changes).
+                    if isprop(lb, 'ClickedFcn')
+                        if isempty(lb.ClickedFcn)
+                            lb.ClickedFcn = cb;
+                            n = n + 1;
+                        end
+                    elseif isprop(lb, 'ValueChangedFcn') && isempty(lb.ValueChangedFcn)
+                        lb.ValueChangedFcn = cb;
                         n = n + 1;
                     end
                 catch
