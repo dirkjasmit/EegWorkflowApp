@@ -1,10 +1,11 @@
-function [imp, W] = eeg_fastinterpolate(EEG, chans, method)
+function [imp, W] = eeg_fastinterpolate(EEG, chans, method, predictors)
 % EEG_FASTINTERPOLATE  Every channel predicted from all other channels by
 % spherical spline interpolation, in one matrix operation.
 %
 %   imp      = eeg_fastinterpolate(EEG)
 %   imp      = eeg_fastinterpolate(EEG, chans)
 %   [imp, W] = eeg_fastinterpolate(EEG, chans, method)
+%   [imp, W] = eeg_fastinterpolate(EEG, chans, method, predictors)
 %
 % For each channel in chans, the signal is interpolated from all OTHER
 % channels that have a location, exactly as
@@ -26,6 +27,10 @@ function [imp, W] = eeg_fastinterpolate(EEG, chans, method)
 %   method   'spherical' (default: lambda 0, m 4, n 7, Perrin et al. 1989) or
 %            'sphericalKang' (lambda 1e-8, m 3, n 50, Kang et al. 2015), as in
 %            eeg_interp
+%   predictors  channels the interpolation predicts FROM (default: every
+%            located channel except the one being predicted). Give this to
+%            predict one set of channels from another, e.g. positions of a
+%            target montage added to the dataset (see eeg_interpolateto).
 %
 % OUTPUT
 %   imp      numel(chans) x pnts (x trials) interpolated data, class of EEG.data
@@ -43,6 +48,9 @@ if nargin < 2 || isempty(chans)
 end
 if nargin < 3 || isempty(method)
     method = 'spherical';
+end
+if nargin < 4
+    predictors = [];
 end
 switch lower(method)
     case 'spherical',     params = [0 4 7];
@@ -67,6 +75,12 @@ G = splineG(xyz, params);
 % and m = (sum over all located - x_k)/(n-1), which gives one row of W.
 W = zeros(numel(chans), EEG.nbchan);
 lambda = params(1);
+if ~isempty(predictors)
+    predPos = find(ismember(L, predictors));          % rows of G to predict from
+    if numel(predPos) < 2
+        error('eeg_fastinterpolate:predictors', 'At least 2 located predictor channels are needed.');
+    end
+end
 for i = 1:numel(chans)
     k = chans(i);
     pos = find(L == k, 1);
@@ -74,13 +88,22 @@ for i = 1:numel(chans)
         W(i, k) = 1;                                  % no location: unchanged
         continue
     end
-    g  = [1:pos-1, pos+1:n];
-    M  = [G(g,g) + lambda*eye(n-1); ones(1, n-1)];
+    if isempty(predictors)
+        g = [1:pos-1, pos+1:n];
+    else
+        g = predPos(predPos ~= pos);                  % never predict from itself
+        if isempty(g)
+            W(i, k) = 1;
+            continue
+        end
+    end
+    ng = numel(g);
+    M  = [G(g,g) + lambda*eye(ng); ones(1, ng)];
     w  = G(pos, g) * pinv(M);
     w  = w(1:end-1);                                  % constraint column
     c  = sum(w) - 1;
     row = zeros(1, n);
-    row(g) = w - c/(n-1);
+    row(g) = w - c/ng;
     W(i, L) = row;                                     % own column stays 0
 end
 

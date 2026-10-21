@@ -218,6 +218,33 @@ classdef EegCallbacks
         end
 
         % ---- Settings listboxes ------------------------------------------
+        % Attach ListBoxClicked to every settings listbox that has no callback
+        % of its own. App Designer normally wires these (all of them call
+        % ListBoxFlatlineClicked, which calls ListBoxClicked), but that wiring
+        % lives in the .mlapp and is lost when the controls are edited: the
+        % listboxes then simply do nothing when clicked. Calling this from the
+        % app's startup function puts them back, whatever the .mlapp says.
+        % Returns how many were attached here.
+        function n = wireSettingsListboxes(app)
+            n = 0;
+            m = EegParams.listboxMap();
+            for k = 1:size(m, 1)
+                name = m{k,1};
+                try
+                    if ~isprop(app, name) || ~isvalid(app.(name))
+                        continue
+                    end
+                    lb = app.(name);
+                    if isempty(lb.ClickedFcn)
+                        lb.ClickedFcn = @(src, ~) EegCallbacks.ListBoxClicked(app, struct('Source', src));
+                        n = n + 1;
+                    end
+                catch
+                end
+            end
+        end
+
+
         % Every listbox next to a workflow button shows that button's settings
         % as read-only '<key>=<value>' lines and opens the editor when clicked.
         % In App Designer both Clicked callbacks (ListBoxOpenClicked and
@@ -593,6 +620,153 @@ classdef EegCallbacks
             guidata(hObject, data);
             set(app.pushbuttonResample,'backgroundcolor', EegCallbacks.ColIdle)
             EegCallbacks.trackSpectrum(app, data.EEG, 'Resample');
+        end
+
+        % Value changed function: listboxHistory
+        % Clicking a step in the history highlights that step's line in the
+        % spectrum tracker (and in the larger viewer when it is open): the
+        % line is drawn thick and on top, the others thin. Clicking a note, or
+        % the same item again, puts every line back to normal.
+        function listboxHistory_ValueChanged(app, event) %#ok<INUSD>
+            try
+                lb = app.listboxHistory;
+                [items, kinds] = EegCallbacks.historyState(lb);
+                sel = find(strcmp(items, lb.Value), 1);
+                % the tracker draws one line per recorded step, in the same
+                % order as the history's step lines; notes have no line
+                step = [];
+                if ~isempty(sel) && ~strcmp(kinds{sel}, 'note')
+                    step = nnz(~strcmp(kinds(1:sel), 'note'));
+                end
+                EegCallbacks.highlightTrackLine(app, step);
+            catch
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % Step number of a tracker line (falls back to Inf for lines drawn
+        % before the number was stored, so they sort last).
+        function n = trackLineIndex(h)
+            n = Inf;
+            try
+                u = h.UserData;
+                if isstruct(u) && isfield(u, 'index') && ~isempty(u.index)
+                    n = u.index;
+                end
+            catch
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % Highlight the n-th line of the spectrum tracker (n empty: none).
+        % Works on the thumbnail axes and on the kept viewer figure.
+        function highlightTrackLine(app, n)
+            axList = gobjects(0);
+            if isprop(app, 'UITrackAxes') && isvalid(app.UITrackAxes)
+                axList(end+1) = app.UITrackAxes;
+            end
+            fig = findall(groot, 'Type', 'figure', 'Tag', 'EegTrackViewer');
+            for f = fig(:)'
+                a = findall(f, 'Tag', 'EegTrackViewerAxes');
+                if ~isempty(a), axList(end+1) = a(1); end %#ok<AGROW>
+            end
+            for ax = axList
+                lines = findobj(ax, 'Tag', 'trackMean');
+                if isempty(lines)
+                    continue
+                end
+                % order by the step number stored when the line was drawn: the
+                % drawing order changes once a line is brought to the front
+                num = arrayfun(@(h) EegCallbacks.trackLineIndex(h), lines(:));
+                [~, ord] = sort(num);
+                lines = lines(ord);
+                base = 0.5 + 1.0 * (ax ~= app.UITrackAxes);   % the viewer draws thicker
+                set(lines, 'LineWidth', base);
+                set(lines(end), 'LineWidth', base + 1);       % the last step stays marked
+                if ~isempty(n) && n >= 1 && n <= numel(lines)
+                    h = lines(n);
+                    set(h, 'LineWidth', base + 2.5);
+                    uistack(h, 'top');
+                end
+            end
+        end
+
+        % Button pushed function: pushbuttonInterpolateToChanlocs
+        % Replaces the montage by the channel set of dropdownInterpolateToChanlocs,
+        % every target channel spherically interpolated from the recorded ones
+        % (eeg_interpolateto), so that datasets from different caps become
+        % comparable. The positions come from resources/standard-10-5-cap385.elp
+        % and the source montage is aligned to it on the labels they share.
+        function pushbuttonInterpolateToChanlocs(app, event)
+            hObject = app.eeg_workflow;
+            data = guidata(hObject);
+            say = @(varargin) EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf(varargin{:}));
+            set(app.pushbuttonInterpolateToChanlocs, 'BackgroundColor', EegCallbacks.ColBusy);
+            if ~isfield(data,'EEG') || isempty(data.EEG.data)
+                EegCallbacks.abortStep(app, event, 'No data available');
+                set(app.pushbuttonInterpolateToChanlocs, 'BackgroundColor', EegCallbacks.ColIdle);
+                return
+            end
+            choice = app.dropdownInterpolateToChanlocs.Value;
+            labels = EegCallbacks.channelSet(choice);
+            say('Interpolating to %s: %d channels', choice, numel(labels));
+            try
+                [tmp, info] = eeg_interpolateto(data.EEG, labels, ...
+                    'Template', EegCallbacks.resourceFile('standard-10-5-cap385.elp'));
+            catch E
+                EegCallbacks.abortStep(app, event, E.message);
+                set(app.pushbuttonInterpolateToChanlocs, 'BackgroundColor', EegCallbacks.ColIdle);
+                return
+            end
+            say('- interpolated from %d recorded channels', numel(info.source));
+            if isempty(info.mismatch)
+                say('- no labels in common with the template, so the positions could not be checked; make sure Lookup has been run');
+            else
+                say('- %d labels in common with the template: positions agree to %.1f degrees (median), %.1f worst', ...
+                    numel(info.shared), median(info.mismatch), max(info.mismatch));
+                if max(info.mismatch) > 20
+                    say(' *** warning *** the recorded positions differ strongly from the template: run Lookup first, or the channel locations are in another coordinate convention');
+                end
+            end
+            if ~isempty(info.exact)
+                say('- %d of the target channels were recorded themselves (%s); their signal is interpolated too, so every channel is treated alike', ...
+                    numel(info.exact), strjoin(info.exact, ' '));
+            end
+            data = EegCallbacks.pushUndo(app, event, data, data.EEG, EegCallbacks.callerStepName());
+            data.EEG = tmp;
+            guidata(hObject, data);
+            data.EEG = EegCallbacks.recordPower(app, data.EEG, 'InterpolateTo');
+            guidata(hObject, data);
+            set(app.pushbuttonInterpolateToChanlocs, 'BackgroundColor', EegCallbacks.ColIdle);
+        end
+
+        % ------------------------------------------------------------------
+        % Channel labels of an entry of dropdownInterpolateToChanlocs: a named
+        % set, or the entry itself read as a list of labels separated by
+        % spaces, commas or semicolons. Every label must exist in
+        % resources/standard-10-5-cap385.elp (old names T3 T4 T5 T6 A1 A2 are
+        % understood).
+        function labels = channelSet(choice)
+            switch lower(strtrim(choice))
+                case '10/20 (19)'
+                    labels = {'Fp1','Fp2','F7','F3','Fz','F4','F8','T7','C3','Cz','C4','T8', ...
+                              'P7','P3','Pz','P4','P8','O1','O2'};
+                case '10/10 (64)'
+                    labels = {'Fp1','Fpz','Fp2','AF7','AF3','AFz','AF4','AF8', ...
+                              'F7','F5','F3','F1','Fz','F2','F4','F6','F8', ...
+                              'FT7','FC5','FC3','FC1','FCz','FC2','FC4','FC6','FT8', ...
+                              'T7','C5','C3','C1','Cz','C2','C4','C6','T8', ...
+                              'TP9','TP7','CP5','CP3','CP1','CPz','CP2','CP4','CP6','TP8','TP10', ...
+                              'P7','P5','P3','P1','Pz','P2','P4','P6','P8', ...
+                              'PO7','PO3','POz','PO4','PO8','O1','Oz','O2','Iz'};
+                otherwise
+                    labels = strtrim(split(strtrim(choice), {' ', ',', ';', newline, char(9)}))';
+                    labels = labels(~cellfun(@isempty, labels));
+                    if isempty(labels)
+                        error('EegCallbacks:emptyChannelSet', ...
+                            'No channels in ''%s''.', choice);
+                    end
+            end
         end
 
         % Button pushed function: pushbuttonRereference
@@ -1119,6 +1293,16 @@ classdef EegCallbacks
                     [tmp, info] = eeg_linenoise(tmp, 'LineFreq', f0, 'Harmonics', mult, ...
                         'SegmentLength', L, 'MinPeakDb', P('minpeak'), 'Drift', logical(P('drift')), ...
                         'Verbose', false);
+                    if isfield(tmp.etc, 'linenoiseCheck')
+                        for c = tmp.etc.linenoiseCheck
+                            if c.changeDb > 0.5
+                                say([' *** warning *** %g Hz: the band is %.1f dB STRONGER than before. ' ...
+                                     'That band probably holds several lines instead of one (sidebands of ' ...
+                                     'an earlier line-noise step, for instance): try a longer piece length, ' ...
+                                     'or leave this step out'], c.nominal, c.changeDb);
+                            end
+                        end
+                    end
                     for f = unique([info.nominal])
                         k    = [info.nominal] == f;
                         done = k & ~[info.skipped];
@@ -3613,7 +3797,8 @@ classdef EegCallbacks
                      'pushbuttonExcessivePeriodsButtonPushed', 'pushbuttonEMGPeriods_Callback', 'pushbuttonIntCleanButtonPushed', ...
                      'pushbuttonRemoveTask_Callback', 'pushbuttonRemoveResting_Callback', 'pushbuttonRemoveFirstSec_Callback', ...
                      'pushbuttonLastSecButtonPushed', 'pushbuttonLast4minButtonPushed', 'pushbuttonImputeAll_Callback', ...
-                     'pushbuttonReview_Callback', 'pbUndo_Callback', 'pbBatchButtonPushed'}, ...
+                     'pushbuttonReview_Callback', 'pbUndo_Callback', 'pbBatchButtonPushed', ...
+                     'pushbuttonInterpolateToChanlocs'}, ...
                     {'Open', 'Flatline', 'Bad chans', ...
                      'Lookup', 'Resample', 'Rereference', ...
                      'Line noise', 'Filter', 'EOG', ...
@@ -3623,7 +3808,8 @@ classdef EegCallbacks
                      'Excessive periods', 'EMG periods', 'Interpolation Clean', ...
                      'Remove task', 'Remove no-task', 'Rm first 1s', ...
                      'Rm last 1s', 'Keep last 4 min', 'Impute All', ...
-                     'Review', 'Undo', 'Batch'});
+                     'Review', 'Undo', 'Batch', ...
+                     'Interpolate to'});
             end
             label = '';
             if isKey(map, fn)
@@ -3812,8 +3998,12 @@ classdef EegCallbacks
                     if isfield(gd, 'Stack'), depth = numel(gd.Stack); end
                 catch
                 end
+                % index: the step number this line belongs to, so the history
+                % can point at it later (the drawing order changes as soon as
+                % a line is brought to the front)
+                idx = numel(findobj(ax, 'Tag', 'trackMean')) + 1;
                 plot(ax, x, m, 'LineWidth', 1.5, 'Tag', 'trackMean', 'DisplayName', label, ...
-                    'HitTest', 'off', 'UserData', struct('depth', depth));
+                    'HitTest', 'off', 'UserData', struct('depth', depth, 'index', idx));
                 disableDefaultInteractivity(ax);   % no pan/zoom/datatips on the thumbnail
                 hold(ax, 'off');
                 ax.XTickMode = 'auto';

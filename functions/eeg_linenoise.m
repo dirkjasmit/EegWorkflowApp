@@ -64,6 +64,11 @@ function [EEG, info] = eeg_linenoise(EEG, varargin)
 %                   (default 1). Multiples at or above Nyquist are skipped.
 %   'SearchHz'      the FFT peak is searched within +/- this many Hz of each
 %                   nominal frequency (default 0.5)
+%   A piece is also left alone when the removal would RAISE the power within
+%   'SearchHz' of the nominal frequency, which happens when that band holds
+%   several lines instead of one (for example sidebands left by another
+%   line-noise method); such pieces are reported as skipped.
+%
 %   'MinPeakDb'     minimum height of that peak above the median power 1.5-5 Hz
 %                   around it, in dB, for the frequency to be removed
 %                   (default 5). Measured: real 60 Hz mains 6-22 dB per 20 s
@@ -83,7 +88,9 @@ function [EEG, info] = eeg_linenoise(EEG, varargin)
 %   'Verbose'       print a summary (default true)
 %
 % OUTPUT
-%   EEG             cleaned dataset; EEG.etc.linenoise holds info
+%   EEG             cleaned dataset; EEG.etc.linenoise holds info and
+%                   EEG.etc.linenoiseCheck the change in band power per line
+%                   frequency (negative = the band got weaker, as intended)
 %   info            struct array, one element per stretch x harmonic:
 %                     .segment    [first last] sample
 %                     .nominal    nominal frequency (Hz)
@@ -130,6 +137,10 @@ if isempty(freqs)
     warning('eeg_linenoise:nothingToDo', 'No line frequencies below Nyquist.');
     return
 end
+
+% power around each line frequency before cleaning, to check afterwards that
+% the step really helped (see EEG.etc.linenoiseCheck)
+bandBefore = arrayfun(@(f) wholeBandPower(EEG, chans, f, o.SearchHz), freqs);
 
 isEpoched = EEG.trials > 1;
 nEp       = size(EEG.data, 3);
@@ -178,6 +189,24 @@ end
 EEG.icaact = [];
 if ~isfield(EEG, 'etc') || ~isstruct(EEG.etc), EEG.etc = struct(); end
 EEG.etc.linenoise = info;
+
+% did it help? the per-piece fits can each be sound while the result is worse:
+% when the band holds several lines instead of one (sidebands another method
+% left behind, say), neighbouring pieces lock onto different lines and the
+% subtracted signal jumps at every piece boundary. Measured on such a file:
+% +3.6 dB with 5 s pieces, +1.9 with 20 s, +0.7 with 60 s, +0.1 with one piece.
+bandAfter = arrayfun(@(f) wholeBandPower(EEG, chans, f, o.SearchHz), freqs);
+EEG.etc.linenoiseCheck = struct('nominal', num2cell(freqs), ...
+    'changeDb', num2cell(10*log10(bandAfter ./ max(bandBefore, eps))));
+for j = 1:numel(freqs)
+    ch = EEG.etc.linenoiseCheck(j).changeDb;
+    if ch > 0.5 && o.Verbose
+        warning('eeg_linenoise:worse', ...
+            ['%g Hz: the band is %.1f dB STRONGER after removal. That band probably holds ' ...
+             'several lines rather than one; try a longer SegmentLength (or Inf), or leave ' ...
+             'this step out.'], freqs(j), ch);
+    end
+end
 cmd = sprintf('EEG = eeg_linenoise(EEG, ''LineFreq'', %g, ''Harmonics'', %s, ''SegmentLength'', %g, ''Drift'', %d);', ...
     o.LineFreq, mat2str(o.Harmonics), o.SegmentLength, logical(o.Drift));
 EEG.history = [EEG.history newline cmd];
@@ -263,11 +292,31 @@ for f0 = freqs
         cK = best(2);  hK = 2*hK / (o.GridPoints - 1);
     end
 
+    % keep the estimate inside the search range: with short pieces the zooming
+    % grid can otherwise wander a whole FFT bin past the peak and lock onto a
+    % neighbouring line
+    best(1) = min(max(best(1), f0 - o.SearchHz), f0 + o.SearchHz);
+
     % regress the best cosine/sine pair out of all channels
     ph = 2*pi*(best(1)*t + 0.5*best(2)*t.^2);
     X = [cos(ph), sin(ph)];
     B = (X'*X) \ (X'*Y);                              % 2 x channels
     fit = X*B;
+
+    % a sinusoid fit can only lower the energy of the piece, but it can still
+    % raise the power AROUND the line when the band holds several lines rather
+    % than one (for instance the sidebands another line-noise method left
+    % behind). Undo the removal when that happens, and report it as skipped.
+    before = bandPower(Y, n, fs, f0, o.SearchHz);
+    after  = bandPower(Y - fit, n, fs, f0, o.SearchHz);
+    if after > before
+        segInfo(k).freq      = best(1);
+        segInfo(k).drift     = best(2);
+        segInfo(k).skipped   = true;
+        segInfo(k).removed   = zeros(1, size(Y, 2));
+        segInfo(k).amplitude = zeros(1, size(Y, 2));
+        continue
+    end
     Y = Y - fit;
 
     segInfo(k).freq      = best(1);
@@ -276,6 +325,35 @@ for f0 = freqs
     segInfo(k).removed   = sum(fit.^2, 1) ./ max(tot, eps);
     segInfo(k).amplitude = sqrt(sum(B.^2, 1));
 end
+end
+
+% -----------------------------------------------------------------------------
+function P = wholeBandPower(EEG, chans, f0, half)
+% Mean power within +/- half Hz of f0, over the whole recording and channels.
+fs = EEG.srate;
+X  = double(EEG.data(chans, :))';
+w  = min(size(X, 1), 2*fs);
+[p, f] = pwelch(X, hann(w), floor(w/2), [], fs);
+ndx = f >= f0 - half & f <= f0 + half;
+if ~any(ndx)
+    P = 0;
+    return
+end
+P = mean(mean(p(ndx, :), 2));
+end
+
+% -----------------------------------------------------------------------------
+function P = bandPower(Y, n, fs, f0, half)
+% Mean power over channels within +/- half Hz of f0.
+F   = fft(Y);
+m   = floor(n/2) + 1;
+fax = (0:m-1)' * fs / n;
+ndx = fax >= f0 - half & fax <= f0 + half;
+if ~any(ndx)
+    P = 0;
+    return
+end
+P = mean(mean(abs(F(ndx, :)).^2, 2));
 end
 
 % -----------------------------------------------------------------------------
