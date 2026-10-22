@@ -313,6 +313,21 @@ classdef EegBatch
                     end
                 end
                 figure(fig);
+                % the preset sets what the pipeline prescribes; what depends on
+                % the recording it cannot know, so say so plainly
+                msg = {sprintf('The %s steps are set and the settings of those steps are written.', name)
+                       ''
+                       'Check the settings that follow the RECORDING, not the pipeline:'
+                       '  - Lookup: the montage of your system, and whether a reference channel is added'
+                       '  - Line frequency: 50 Hz (Europe) or 60 Hz (Americas)'
+                       '  - Open: how your files are read'};
+                if strcmpi(name, 'PREP')
+                    msg{end+1} = '';
+                    msg{end+1} = 'For PREP the line frequency is in the Execute code box: 60*(1:4) or 50*(1:4).';
+                end
+                msg{end+1} = '';
+                msg{end+1} = 'Walk through the steps in the main window before pressing Start.';
+                uialert(fig, strjoin(msg, newline), 'Check the settings', 'Icon', 'warning');
             end
 
             function closeMe()

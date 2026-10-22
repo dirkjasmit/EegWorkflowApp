@@ -1435,7 +1435,13 @@ classdef EegCallbacks
                 if scoreRuns
                     fprintf(['\n----- ICA run %d of %d: clean_rawdata bad-segment mask to score this run.\n' ...
                              '      Runs on a copy; the data are NOT cleaned here. -----\n'], r, nRuns);
-                    masks(r,:) = EegCallbacks.badSegmentMask(EegCallbacks.subtractIcs(one, reject), ...
+                    scored = EegCallbacks.subtractIcs(one, reject);
+                    if removeSegs
+                        % DISCOVER-EEG scores every run on the interpolated
+                        % data (its step 5 sits inside the repetition loop)
+                        scored = EegCallbacks.restoreRemovedChannels(scored);
+                    end
+                    masks(r,:) = EegCallbacks.badSegmentMask(scored, ...
                         P('ICA','repburst'), P('ICA','repwindow')); %#ok<AGROW>
                     say('- run %d: %d components flagged, %.1f s would be marked bad', ...
                         r, sum(reject), sum(~masks(r,:))/tmp.srate);
@@ -1474,6 +1480,16 @@ classdef EegCallbacks
                     sprintf('%% subtracting %d components ( %s)', numel(removendx), sprintf('%d ', removendx))];
             end
             if removeSegs
+                % DISCOVER-EEG step 5: the channels removed earlier are put
+                % back by interpolation, before its step 6 cuts the bad
+                % segments out
+                [tmp, backLabels] = EegCallbacks.restoreRemovedChannels(tmp);
+                if isempty(backLabels)
+                    say('- no earlier removed channels to interpolate back');
+                else
+                    say('- interpolating %d earlier removed channels back (DISCOVER-EEG step 5): %s', ...
+                        numel(backLabels), strjoin(backLabels, ' '));
+                end
                 bad = ~masks(sel, :);
                 if all(bad)
                     say(' *** warning *** clean_rawdata marks all data as bad; no segments removed');
@@ -2560,46 +2576,42 @@ classdef EegCallbacks
             off = '0'; on = '1';
             switch lower(name)
                 case 'prep'
-                    % Bigdely-Shamlo et al. 2015, in the order of
-                    % prepPipeline.m: detrend (for the computation only),
-                    % line noise, then bad channels + robust average
-                    % reference in one call. That call is PREP's own
-                    % performReference, put in the Execute code box, so the
-                    % result is exactly the plugin's (it must be installed).
-                    P.steps = {'Lookup', 'Remove ~EEG', 'Cleanline', 'Execute code'};
-                    P.settings = {
-                        'lookup', 'locs', 'Standard'
-                        'lookup', 'addref', 'none'
-                        'cleanline', 'method', 'CleanLine'
-                        'cleanline', 'harmonics', on };
+                    % Bigdely-Shamlo et al. 2015. prepPipeline.m IS the
+                    % pipeline: a 1 Hz detrend for the computation, line noise,
+                    % then the robust reference, in one call. So the whole of
+                    % it goes in the Execute code box and nothing else is set:
+                    % PREP does not resample, filter or cut data.
+                    P.steps = {'Lookup', 'Remove ~EEG', 'Execute code'};
+                    P.settings = cell(0, 3);
                     P.controls = struct();
                     P.needsPrep = true;
                     P.code = {
-                        '% PREP bad channels + robust average reference (PrepPipeline plugin)'
+                        '% PREP pipeline (PrepPipeline plugin): line noise + robust average reference'
+                        '% line frequency: 60*(1:4) in the Americas, 50*(1:4) in Europe'
                         'eegchans = find(~cellfun(@isempty, {EEG.chanlocs.X}));'
-                        '[EEG, prepref] = performReference(EEG, struct(''referenceChannels'', eegchans, ...'
-                        '    ''evaluationChannels'', 1:EEG.nbchan, ''rereferencedChannels'', 1:EEG.nbchan));'
-                        'EEG.etc.prepReference = prepref;'
-                        'disp([''PREP bad channels: '' strjoin({EEG.chanlocs(prepref.badChannels.all).labels}, '' '')]);' };
+                        'prepparams = struct(''lineFrequencies'', 60*(1:4), ...'
+                        '    ''referenceChannels'', eegchans, ''evaluationChannels'', eegchans, ...'
+                        '    ''rereferencedChannels'', 1:EEG.nbchan, ''keepFiltered'', false);'
+                        '[EEG, prepparams] = prepPipeline(EEG, prepparams);'
+                        'disp([''PREP bad channels: '' strjoin({EEG.chanlocs(EEG.etc.noiseDetection.reference.badChannels.all).labels}, '' '')]);' };
                     P.notes = {
-                        'PREP: line noise at all harmonics (CleanLine), then PREP''s own performReference in the Execute code box: bad channels (deviation, correlation, HF noise, RANSAC), robust average reference, bad channels interpolated'
-                        'the Execute code box now holds that call; it assumes every channel is an EEG channel with a location, which is why Remove ~EEG comes first'
-                        'to use the app''s own version instead, replace the Execute code step by Rereference with Robust average (PREP)' };
+                        'PREP: the plugin''s own prepPipeline in the Execute code box, which does all of it - a 1 Hz detrend for the computation, line noise at the first four harmonics (PREP''s own multitaper removal, not the CleanLine plugin), bad channels (deviation, correlation, HF noise, RANSAC) and the robust average reference with those channels interpolated'
+                        'set the line frequency in the code box: 60*(1:4) for the Americas, 50*(1:4) in Europe'
+                        'only Lookup and Remove ~EEG come first, because the reference needs located EEG channels; PREP itself does not resample or filter'
+                        'without the plugin: Rereference with ''Robust average (PREP)'' does the referencing part and Line noise the rest' };
                 case 'autoreject'
-                    % Jas et al. 2017, in the order of the MNE tutorials:
-                    % filter, average reference, local autoreject on 1 s epochs.
-                    P.steps = {'Lookup', 'Remove ~EEG', 'Flatline', 'Resample', 'Cleanline', ...
-                               'Filter', 'Rereference', 'Interpolation periods'};
+                    % Jas et al. 2017. autoreject is the epoch-level repair
+                    % itself. Its own example removes no line noise, does not
+                    % resample and does not reference, and it clears the bad
+                    % channels so that autoreject handles everything; the data
+                    % are band-pass filtered (1-40 Hz here) and cut into
+                    % fixed-length epochs (1 s, MNE's default for continuous
+                    % data).
+                    P.steps = {'Lookup', 'Remove ~EEG', 'Filter', 'Interpolation periods'};
                     P.settings = {
-                        'lookup', 'locs', 'Standard'
-                        'lookup', 'addref', 'none'
-                        'resample', 'srate', '250'
-                        'cleanline', 'method', 'eeg_linenoise'
                         'filter', 'low', '1'
                         'filter', 'high', '40'
                         'filter', 'type', 'FIR'
-                        'rereference', 'refchans', 'Average'
-                        'rereference', 'interpremoved', off
                         'interpolation clean', 'method', 'Autoreject'
                         'interpolation clean', 'epochlen', '1'
                         'interpolation clean', 'overlap', '0'
@@ -2607,15 +2619,14 @@ classdef EegCallbacks
                         'interpolation clean', 'ar_folds', '10' };
                     P.controls = struct();
                     P.notes = {
-                        'Autoreject: 1-40 Hz, average reference, then local autoreject on 1 s epochs (10-fold cross-validation of thresholds, kappa and rho): bad channels interpolated per epoch, epochs with too many bad channels removed'
-                        'autoreject itself is only the last step; eye artefacts are usually handled by ICA as well (add the ICA step before Interpolation Clean if wanted)' };
+                        'Autoreject: 1-40 Hz band-pass, then local autoreject on 1 s epochs (10-fold cross-validation of the per-channel thresholds, of rho and of kappa): bad channels interpolated within their epoch, epochs with too many bad channels removed'
+                        'nothing else belongs to it: the example removes no line noise (the 40 Hz low-pass takes care of it), does not resample, does not reference, and leaves the bad channels to autoreject'
+                        'eye artefacts are not covered either; add the ICA step before Interpolation periods when they matter' };
                 case 'discover-eeg'
                     % Gil Avila et al. 2023 (params_example.json defaults).
                     P.steps = {'Lookup', 'Remove ~EEG', 'Resample', 'Cleanline', ...
                                'Bad channels', 'Rereference', 'ICA'};
                     P.settings = {
-                        'lookup', 'locs', 'Standard'
-                        'lookup', 'addref', 'none'
                         'resample', 'srate', '250'
                         'cleanline', 'method', 'CleanLine'
                         'cleanline', 'harmonics', off
@@ -2648,7 +2659,7 @@ classdef EegCallbacks
                     P.controls = struct('ICAtypeDropDown', 'runica', 'ICANumberDropDown', '10');
                     P.notes = {
                         'DISCOVER-EEG: 250 Hz, CleanLine, clean_rawdata bad channels (flatline 5 s, r 0.8, line noise 4 SD, 0.25-0.75 Hz high-pass), average reference, 10 x runica at data rank with the most typical run kept, ICLabel Muscle/Eye >= 0.8 removed, then its bad segments (burst 20, window 0.25) removed'
-                        'difference: DISCOVER-EEG interpolates the removed channels back after ICA; here they stay removed' };
+                        'the channels removed by Bad channels are interpolated back after the component subtraction (DISCOVER-EEG step 5), before its bad segments are cut out' };
                 otherwise
                     error('EegCallbacks:unknownPreset', 'Unknown pipeline ''%s''.', name);
             end
@@ -2706,6 +2717,9 @@ classdef EegCallbacks
             for k = 1:numel(P.notes)
                 say('- %s', P.notes{k});
             end
+            % settings that follow the recording, not the pipeline, are left
+            % as they are: the preset cannot know them
+            say('- set yourself, by recording system: Lookup (montage, reference channel) and the line frequency (50 or 60 Hz)');
             steps = P.steps;
         end
 
@@ -3144,6 +3158,37 @@ classdef EegCallbacks
                 EEG.etc.recordPSD = {};
             end
             EEG.etc.recordPSD{end+1} = S;
+        end
+
+        % ------------------------------------------------------------------
+        % Put channels that an earlier step removed back by spherical
+        % interpolation, as DISCOVER-EEG does after ICA (its step 5). The
+        % channels come from EEG.chaninfo.removedchans, which pop_select
+        % fills in; only those with a location and not already present are
+        % added. Returns the dataset and the labels that were put back.
+        function [EEG, labels] = restoreRemovedChannels(EEG)
+            labels = {};
+            try
+                if ~isfield(EEG, 'chaninfo') || ~isfield(EEG.chaninfo, 'removedchans') ...
+                        || isempty(EEG.chaninfo.removedchans)
+                    return
+                end
+                rc = EEG.chaninfo.removedchans;
+                if ~isfield(rc, 'theta')
+                    return
+                end
+                rc = rc(~cellfun(@isempty, {rc.theta}));
+                rc = rc(~ismember(upper({rc.labels}), upper({EEG.chanlocs.labels})));
+                if isempty(rc)
+                    return
+                end
+                EEG = pop_interp(EEG, rc, 'spherical');
+                labels = {rc.labels};
+                EEG.history = [EEG.history newline sprintf( ...
+                    'EEG = pop_interp(EEG, removedchans, ''spherical''); %% %d channels put back', numel(labels))];
+            catch
+                labels = {};
+            end
         end
 
         % ------------------------------------------------------------------
