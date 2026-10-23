@@ -16,3 +16,7 @@ temp.set
 # app state written at run time
 *.ini
 .chanlocs.mat
+
+# PREP pipeline report output (written in the current folder by prepReport)
+Report.pdf
+Summary.html

@@ -1072,13 +1072,14 @@ classdef EegCallbacks
             if isempty(goodchans), goodchans = 1:tmp.nbchan; end
             npca = min(16, numel(goodchans));
             icatype = EegCallbacks.icaType(app);
+            ext     = EegCallbacks.extendedArg(icatype, EegParams.get(data.params, 'ICA', 'extended'));
             scratch = EegCallbacks.binicaFiles();
             try
                 if strcmpi(icatype,'jader')
                     warning('using the JADER ICA algorithm. Ncomps/ PCA not used')
                     tmp = pop_runica(tmp, 'icatype', 'jader', 'chanind', goodchans);
                 else
-                    tmp = pop_runica(tmp,'icatype',icatype,'pca',npca,'chanind',goodchans);
+                    tmp = pop_runica(tmp,'icatype',icatype,'pca',npca,'chanind',goodchans, ext{:});
                 end
             catch
                 tmp = pop_runica(tmp,'icatype','runica','extended',1,'pca',npca,'chanind',goodchans);
@@ -1132,13 +1133,14 @@ classdef EegCallbacks
                 return
             end
             icatype = EegCallbacks.icaType(app);
+            ext     = EegCallbacks.extendedArg(icatype, EegParams.get(data.params, 'ICA', 'extended'));
             scratch = EegCallbacks.binicaFiles();
             try
                 if strcmpi(icatype,'jader')
                     warning('using the JADER ICA algorithm. Ncomps/ PCA not used')
                     [tmp, cmd] = pop_runica(tmp, 'icatype', 'jader'); %#ok<ASGLU>
                 else
-                    [tmp, cmd] = pop_runica(tmp,'icatype',icatype,'pca',12); %#ok<ASGLU>
+                    [tmp, cmd] = pop_runica(tmp,'icatype',icatype,'pca',12, ext{:}); %#ok<ASGLU>
                 end
             catch
                 [tmp, cmd] = pop_runica(tmp,'icatype','runica','extended',1,'pca',12); %#ok<ASGLU>
@@ -1271,7 +1273,20 @@ classdef EegCallbacks
             fstr  = strjoin(arrayfun(@(x) sprintf('%g', x), f0*mult, 'uni', 0), ', ');
 
             switch lower(method)
-                case 'cleanline'
+                case 'cleanline (fast)'
+                    % CleanLine's own algorithm, every channel at once
+                    say('Removing line noise with CleanLine (fast) at %s Hz', fstr);
+                    [tmp, cl] = eeg_cleanlinefast(tmp, 'LineFrequencies', f0*mult);
+                    say('- %d passes; median %.2f%% of channel variance removed', ...
+                        cl.iterations, 100*median(cl.removed));
+                    worst = find(cl.removed > 0.01);
+                    if ~isempty(worst)
+                        [~, o2] = sort(cl.removed(worst), 'descend');
+                        worst = worst(o2(1:min(5, numel(o2))));
+                        say('  most affected: %s', strjoin(arrayfun(@(k) sprintf('%s (%.1f%%)', ...
+                            tmp.chanlocs(k).labels, 100*cl.removed(k)), worst, 'uni', 0), ' '));
+                    end
+                case {'cleanline', 'cleanline (plugin)'}
                     if isempty(which('pop_cleanline'))
                         say(' *** error *** CleanLine plugin not found (EEGLAB plugins: Cleanline)');
                         EegCallbacks.abortStep(app, event, 'CleanLine plugin not found.');
@@ -1398,7 +1413,8 @@ classdef EegCallbacks
                 removeSegs = false;
             end
             scoreRuns = nRuns > 1 || removeSegs;
-            say('ICA (%s, %d components, %d run%s)', icatype, ncomps, nRuns, ifthen(nRuns>1, 's', ''));
+            say('ICA (%s, %d components, %d run%s%s)', icatype, ncomps, nRuns, ifthen(nRuns>1, 's', ''), ...
+                ifthen(~isempty(EegCallbacks.extendedArg(icatype, P('ICA','extended'))), ', extended Infomax', ''));
             rules = EegCallbacks.icRules(data.params);
             if isempty(rules)
                 say(' *** warning *** no ICLabel class switched on: no components will be removed');
@@ -1423,7 +1439,7 @@ classdef EegCallbacks
                 if nRuns > 1
                     fprintf('\n===== ICA run %d of %d =====\n', r, nRuns);
                 end
-                [one, cmd] = EegCallbacks.decomposeIca(app, tmp, icatype, ncomps, goodchans, r);
+                [one, cmd] = EegCallbacks.decomposeIca(app, tmp, icatype, ncomps, goodchans, r, P('ICA','extended'));
                 [one, reject] = EegCallbacks.flagIcs(one, rules);
                 runs(r).icaweights     = one.icaweights;
                 runs(r).icasphere      = one.icasphere;
@@ -2524,11 +2540,11 @@ classdef EegCallbacks
             str = {
                 '--------'
                 'Flatline'
-                'Bad channels'
+                'Bad chans'
                 'Lookup'
                 'Resample'
                 'Rereference'
-                'Cleanline'
+                'Line noise'
                 'Filter'
                 'EOG'
                 'Alt EOG'
@@ -2538,18 +2554,20 @@ classdef EegCallbacks
                 'ICA'
                 '--------'
                 'Execute code'
-                'Remove ~EEG'
+                'Rm ~EEG ch'
                 'Remove chans'
                 '--------'
                 'Flat periods'
                 'Excessive periods'
                 'EMG periods'
-                'Interpolation periods'
+                'Interpolation Clean'
                 '--------'
-                'Remove 1st s'
-                'Remove last s'
+                'Rm first 1s'
+                'Rm last 1s'
                 'Remove task'
                 'Remove no-task'
+                '--------'
+                'Interpolate to'
                 };
             buttons = struct2table(struct('idx', num2cell( (1:numel(str))' ), 'label',str));
             % buttons now holds the order in idx to be used in the case.
@@ -2564,163 +2582,28 @@ classdef EegCallbacks
             % is still on the stack).
             EegBatch.dialog(hObject, data.SETTINGSDIR, data.DEFAULTDIR, str, ...
                 @(sel) EegCallbacks.runBatch(app, sel), ...
-                @(name) EegCallbacks.applyPreset(app, name));
+                @(name) EegCallbacks.applyPreset(app, name), ...
+                @(name, labels, prefix) EegPreset.saveCurrent(app, name, labels, prefix, data.SETTINGSDIR));
         end
 
         % ------------------------------------------------------------------
-        % Pipeline presets of the batch window. Each gives the batch steps in
-        % order (labels of the batch step list), the settings of those steps,
-        % the main-window controls to set, and notes on where the emulation
-        % differs from the original pipeline.
-        function P = pipelinePreset(name)
-            off = '0'; on = '1';
-            switch lower(name)
-                case 'prep'
-                    % Bigdely-Shamlo et al. 2015. prepPipeline.m IS the
-                    % pipeline: a 1 Hz detrend for the computation, line noise,
-                    % then the robust reference, in one call. So the whole of
-                    % it goes in the Execute code box and nothing else is set:
-                    % PREP does not resample, filter or cut data.
-                    P.steps = {'Lookup', 'Remove ~EEG', 'Execute code'};
-                    P.settings = cell(0, 3);
-                    P.controls = struct();
-                    P.needsPrep = true;
-                    P.code = {
-                        '% PREP pipeline (PrepPipeline plugin): line noise + robust average reference'
-                        '% line frequency: 60*(1:4) in the Americas, 50*(1:4) in Europe'
-                        'eegchans = find(~cellfun(@isempty, {EEG.chanlocs.X}));'
-                        'prepparams = struct(''lineFrequencies'', 60*(1:4), ...'
-                        '    ''referenceChannels'', eegchans, ''evaluationChannels'', eegchans, ...'
-                        '    ''rereferencedChannels'', 1:EEG.nbchan, ''keepFiltered'', false);'
-                        '[EEG, prepparams] = prepPipeline(EEG, prepparams);'
-                        'disp([''PREP bad channels: '' strjoin({EEG.chanlocs(EEG.etc.noiseDetection.reference.badChannels.all).labels}, '' '')]);' };
-                    P.notes = {
-                        'PREP: the plugin''s own prepPipeline in the Execute code box, which does all of it - a 1 Hz detrend for the computation, line noise at the first four harmonics (PREP''s own multitaper removal, not the CleanLine plugin), bad channels (deviation, correlation, HF noise, RANSAC) and the robust average reference with those channels interpolated'
-                        'set the line frequency in the code box: 60*(1:4) for the Americas, 50*(1:4) in Europe'
-                        'only Lookup and Remove ~EEG come first, because the reference needs located EEG channels; PREP itself does not resample or filter'
-                        'without the plugin: Rereference with ''Robust average (PREP)'' does the referencing part and Line noise the rest' };
-                case 'autoreject'
-                    % Jas et al. 2017. autoreject is the epoch-level repair
-                    % itself. Its own example removes no line noise, does not
-                    % resample and does not reference, and it clears the bad
-                    % channels so that autoreject handles everything; the data
-                    % are band-pass filtered (1-40 Hz here) and cut into
-                    % fixed-length epochs (1 s, MNE's default for continuous
-                    % data).
-                    P.steps = {'Lookup', 'Remove ~EEG', 'Filter', 'Interpolation periods'};
-                    P.settings = {
-                        'filter', 'low', '1'
-                        'filter', 'high', '40'
-                        'filter', 'type', 'FIR'
-                        'interpolation clean', 'method', 'Autoreject'
-                        'interpolation clean', 'epochlen', '1'
-                        'interpolation clean', 'overlap', '0'
-                        'interpolation clean', 'mergegap', '0'
-                        'interpolation clean', 'ar_folds', '10' };
-                    P.controls = struct();
-                    P.notes = {
-                        'Autoreject: 1-40 Hz band-pass, then local autoreject on 1 s epochs (10-fold cross-validation of the per-channel thresholds, of rho and of kappa): bad channels interpolated within their epoch, epochs with too many bad channels removed'
-                        'nothing else belongs to it: the example removes no line noise (the 40 Hz low-pass takes care of it), does not resample, does not reference, and leaves the bad channels to autoreject'
-                        'eye artefacts are not covered either; add the ICA step before Interpolation periods when they matter' };
-                case 'discover-eeg'
-                    % Gil Avila et al. 2023 (params_example.json defaults).
-                    P.steps = {'Lookup', 'Remove ~EEG', 'Resample', 'Cleanline', ...
-                               'Bad channels', 'Rereference', 'ICA'};
-                    P.settings = {
-                        'resample', 'srate', '250'
-                        'cleanline', 'method', 'CleanLine'
-                        'cleanline', 'harmonics', off
-                        'excessive signal', 'use_z', off
-                        'excessive signal', 'use_sd', off
-                        'excessive signal', 'use_flatline', on
-                        'excessive signal', 'flatline', '5'
-                        'excessive signal', 'use_minr', on
-                        'excessive signal', 'minr', '0.8'
-                        'excessive signal', 'use_noise', on
-                        'excessive signal', 'noise', '4'
-                        'excessive signal', 'use_drift', on
-                        'excessive signal', 'drift', '0.25-0.75'
-                        'excessive signal', 'maxbadtime', '0.5'
-                        'excessive signal', 'use_ransac', off
-                        'rereference', 'refchans', 'Average'
-                        'rereference', 'interpremoved', on
-                        'ICA', 'pca', '250'
-                        'ICA', 'use_muscle', on
-                        'ICA', 'muscle', '0.8'
-                        'ICA', 'use_eye', on
-                        'ICA', 'eye', '0.8'
-                        'ICA', 'use_heart', off
-                        'ICA', 'use_linenoise', off
-                        'ICA', 'use_channoise', off
-                        'ICA', 'use_other', off
-                        'ICA', 'repburst', '20'
-                        'ICA', 'repwindow', '0.25'
-                        'ICA', 'discovereeg', on };
-                    P.controls = struct('ICAtypeDropDown', 'runica', 'ICANumberDropDown', '10');
-                    P.notes = {
-                        'DISCOVER-EEG: 250 Hz, CleanLine, clean_rawdata bad channels (flatline 5 s, r 0.8, line noise 4 SD, 0.25-0.75 Hz high-pass), average reference, 10 x runica at data rank with the most typical run kept, ICLabel Muscle/Eye >= 0.8 removed, then its bad segments (burst 20, window 0.25) removed'
-                        'the channels removed by Bad channels are interpolated back after the component subtraction (DISCOVER-EEG step 5), before its bad segments are cut out' };
-                otherwise
-                    error('EegCallbacks:unknownPreset', 'Unknown pipeline ''%s''.', name);
+        % Apply the pipeline preset called name (EegPreset: the files in
+        % resources/presets and in <SETTINGSDIR>/presets). Returns
+        % {steps, check, prefix} for the batch window.
+        function out = applyPreset(app, name)
+            P = EegPreset.list(guidata(app.eeg_workflow).SETTINGSDIR);
+            k = find(strcmpi({P.name}, name), 1);
+            if isempty(k)
+                error('EegCallbacks:unknownPreset', 'No preset called ''%s'' was found.', name);
             end
-        end
-
-        % ------------------------------------------------------------------
-        % Apply a pipeline preset (pipelinePreset): write its settings, save
-        % them, refresh the settings lists and set the main-window controls.
-        % Returns the batch steps in order, for the batch window.
-        function steps = applyPreset(app, name)
-            hObject = app.eeg_workflow;
-            data = guidata(hObject);
+            preset = EegPreset.load(P(k).file);
             say = @(varargin) EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf(varargin{:}));
-            P = EegCallbacks.pipelinePreset(name);
-            if isfield(P, 'needsPrep') && P.needsPrep
-                % fail here, at the click, not halfway through a batch run
-                prepdir = fileparts(which('eegplugin_prepPipeline'));
-                if isempty(prepdir)
-                    error('EegCallbacks:noPrepPlugin', ['The %s preset runs the PrepPipeline plugin, ' ...
-                        'which is not installed. Install it in EEGLAB (File > Manage EEGLAB extensions > ' ...
-                        'PrepPipeline), or use Rereference with ''Robust average (PREP)'' instead.'], name);
-                end
-                addpath(genpath(prepdir));      % its functions live in subfolders
-                if isempty(which('performReference'))
-                    error('EegCallbacks:noPrepPlugin', ...
-                        'PrepPipeline was found in %s, but performReference is missing from it.', prepdir);
-                end
-                say('- PrepPipeline plugin found (%s) and added to the path', prepdir);
+            [steps, check] = EegPreset.apply(app, preset, say);
+            prefix = '';
+            if isstruct(preset.batch) && isfield(preset.batch, 'prefix')
+                prefix = char(preset.batch.prefix);
             end
-            for k = 1:size(P.settings, 1)
-                data.params = EegParams.set(data.params, P.settings{k,1}, P.settings{k,2}, P.settings{k,3});
-            end
-            data.params = EegParams.validate(data.params);
-            EegParams.save(data.params, data.SETTINGSDIR);
-            EegParams.refresh(app, data.params);
-            fn = fieldnames(P.controls);
-            for k = 1:numel(fn)
-                try
-                    ctl = app.(fn{k});
-                    if any(strcmp(ctl.Items, P.controls.(fn{k})))
-                        ctl.Value = P.controls.(fn{k});
-                    end
-                catch
-                end
-            end
-            if isfield(P, 'code') && ~isempty(P.code)
-                try
-                    app.textareaExecuteCode.Value = P.code;
-                catch
-                    say(' *** warning *** could not fill the Execute code box');
-                end
-            end
-            guidata(hObject, data);
-            say('Pipeline preset %s: %d settings changed, steps %s', name, size(P.settings, 1), strjoin(P.steps, ' > '));
-            for k = 1:numel(P.notes)
-                say('- %s', P.notes{k});
-            end
-            % settings that follow the recording, not the pipeline, are left
-            % as they are: the preset cannot know them
-            say('- set yourself, by recording system: Lookup (montage, reference channel) and the line frequency (50 or 60 Hz)');
-            steps = P.steps;
+            out = {steps, check, prefix};
         end
 
         % ------------------------------------------------------------------
@@ -2815,6 +2698,7 @@ classdef EegCallbacks
                                 case 26, EegCallbacks.pushbuttonLastSecButtonPushed(app, 'batch');
                                 case 27, EegCallbacks.pushbuttonRemoveTask_Callback(app, 'batch');
                                 case 28, EegCallbacks.pushbuttonRemoveResting_Callback(app, 'batch');
+                                case 30, EegCallbacks.pushbuttonInterpolateToChanlocs(app, 'batch');
                                 otherwise        % separators: nothing to do
                             end
                             data = guidata(hObject);
@@ -3093,8 +2977,15 @@ classdef EegCallbacks
                     'MaxIterations', P('rereference','robustiter'), ...
                     'Deviation', P('rereference','robustdev'), ...
                     'Correlation', P('rereference','robustcorr'), ...
+                    'CorrWindow', P('rereference','robustcorrwin'), ...
+                    'BadTime', P('rereference','robustbadtime'), ...
                     'HighFrequency', P('rereference','robusthf'), ...
                     'Ransac', logical(P('rereference','robustransac')), ...
+                    'RansacR', P('rereference','robustransac_r'), ...
+                    'RansacMaxBad', P('rereference','robustransac_maxbad'), ...
+                    'RansacWindow', P('rereference','robustransac_window'), ...
+                    'RansacDraws', P('rereference','robustransac_draws'), ...
+                    'RansacFraction', P('rereference','robustransac_fraction'), ...
                     'InterpolateBad', logical(P('rereference','robustinterp')));
             catch E
                 EegCallbacks.abortStep(app, event, E.message);
@@ -3188,6 +3079,19 @@ classdef EegCallbacks
                     'EEG = pop_interp(EEG, removedchans, ''spherical''); %% %d channels put back', numel(labels))];
             catch
                 labels = {};
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % {'extended', 1} for the algorithms that have it, {} for the rest.
+        % Extended Infomax (Lee, Girolami & Sejnowski 1999) estimates the sign
+        % of each component's kurtosis, so sub-Gaussian sources are separated
+        % too. runica and binica take it; PICARD and AMICA have their own
+        % model and jader is a different algorithm altogether.
+        function extra = extendedArg(icatype, on)
+            extra = {};
+            if on && any(strcmpi(icatype, {'runica', 'binica'}))
+                extra = {'extended', 1};
             end
         end
 
@@ -3533,11 +3437,12 @@ classdef EegCallbacks
         % called through pop_runica starts from the identity matrix and would
         % give the same answer each time, so later PICARD runs get a random
         % orthogonal starting matrix (picard 'w_init').
-        function [EEG, cmd] = decomposeIca(app, EEG, icatype, ncomps, goodchans, run)
-            extra = {};
+        function [EEG, cmd] = decomposeIca(app, EEG, icatype, ncomps, goodchans, run, extended)
+            if nargin < 7, extended = false; end
+            extra = EegCallbacks.extendedArg(icatype, extended);
             if run > 1 && strcmpi(icatype, 'picard')
                 [Q, ~] = qr(randn(ncomps));
-                extra = {'w_init', Q};
+                extra = [extra, {'w_init', Q}];
             end
             scratch = EegCallbacks.binicaFiles();
             try

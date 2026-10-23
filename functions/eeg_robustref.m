@@ -43,6 +43,12 @@ function [EEG, info] = eeg_robustref(EEG, varargin)
 %   'BadTime'        fraction of windows a channel may fail it (default 0.01)
 %   'HighFrequency'  robust z for the high-frequency noise test (default 5)
 %   'Ransac'         run the RANSAC test (default true)
+%   'CorrWindow'     window of the correlation test in seconds (default 1)
+%   'RansacR'        correlation a RANSAC window must reach (default 0.75)
+%   'RansacMaxBad'   fraction of RANSAC windows a channel may fail (0.4)
+%   'RansacWindow'   RANSAC window in seconds (default 5)
+%   'RansacDraws'    random subsets (default 50)
+%   'RansacFraction' subset size as a fraction of the channels (default 0.25)
 %   'InterpolateBad' leave the bad channels interpolated in the output
 %                    (default true, as PREP); false restores them unreferenced
 %                    values minus the reference
@@ -73,6 +79,12 @@ p.addParameter('Correlation', 0.4);
 p.addParameter('BadTime', 0.01);
 p.addParameter('HighFrequency', 5);
 p.addParameter('Ransac', true);
+p.addParameter('CorrWindow', 1);
+p.addParameter('RansacR', 0.75);
+p.addParameter('RansacMaxBad', 0.4);
+p.addParameter('RansacWindow', 5);
+p.addParameter('RansacDraws', 50);
+p.addParameter('RansacFraction', 0.25);
 p.addParameter('InterpolateBad', true);
 p.addParameter('Verbose', false);
 p.parse(varargin{:});
@@ -209,18 +221,26 @@ if o.Deviation > 0
     bad = bad | hit;
 end
 
-% correlation: largest correlation with any other channel, per 1 s window
+% correlation: largest correlation with any other channel, per window.
+% Windows that cross a boundary event are skipped: the jump there would look
+% like every channel losing its neighbours at once.
 if o.Correlation > 0
-    L = round(fs);
+    L = max(2, round(o.CorrWindow * fs));
     nw = floor(size(W, 2) / L);
-    if nw > 1
+    bnd = boundaryLatencies(H);
+    use = true(1, nw);
+    for w = 1:nw
+        lo = (w-1)*L + 1; hi = w*L;
+        use(w) = ~any(bnd > lo & bnd < hi);
+    end
+    if nnz(use) > 1
         low = 0;
-        for w = 1:nw
+        for w = find(use)
             C = corrcoef(W(:, (w-1)*L + (1:L))');
             C(1:n+1:end) = 0;
             low = low + (max(abs(C), [], 2)' < o.Correlation);
         end
-        hit = low / nw > o.BadTime;
+        hit = low / nnz(use) > o.BadTime;
         tests.correlation = union(tests.correlation, find(hit));
         bad = bad | hit;
     end
@@ -239,13 +259,25 @@ end
 % RANSAC predictability
 if o.Ransac
     try
-        R = eeg_ransac(setData(H, W), 'Channels', 1:n);
-        frac = mean(R < 0.75, 2)';
-        hit  = frac > 0.4;
+        R = eeg_ransac(setData(H, W), 'Channels', 1:n, ...
+            'WindowSeconds', o.RansacWindow, 'Draws', o.RansacDraws, ...
+            'Fraction', o.RansacFraction);
+        frac = mean(R < o.RansacR, 2)';
+        hit  = frac > o.RansacMaxBad;
         tests.ransac = union(tests.ransac, find(hit));
         bad = bad | hit;
     catch
     end
+end
+end
+
+% -----------------------------------------------------------------------------
+function lat = boundaryLatencies(EEG)
+lat = [];
+if isfield(EEG, 'event') && ~isempty(EEG.event) && isfield(EEG.event, 'type')
+    isB = strcmpi({EEG.event.type}, 'boundary');
+    lat = [EEG.event(isB).latency];
+    lat = lat(lat > 1 & lat < EEG.pnts);
 end
 end
 

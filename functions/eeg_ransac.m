@@ -22,6 +22,8 @@ function [R, info] = eeg_ransac(EEG, varargin)
 %   'Fraction'      subset size as a fraction of Channels (default 0.25)
 %   'Seed'          seed of the subset draw (default 435656, as PREP, so the
 %                   same subsets are drawn every run)
+%   'SkipBoundaries' leave out windows that cross a boundary event
+%                   (default true); info.droppedWindows counts them
 %   'Style'         'prep'    (default) PREP's test: the data are low-passed
 %                             at 45-50 Hz when srate > 100 and the correlation
 %                             is uncentred (sum(x.*y)/sqrt(sum(x.^2)*sum(y.^2)))
@@ -56,6 +58,7 @@ p.addParameter('Draws', 50);
 p.addParameter('Fraction', 0.25);
 p.addParameter('Seed', 435656);
 p.addParameter('Style', 'prep');
+p.addParameter('SkipBoundaries', true);
 p.parse(varargin{:});
 o = p.Results;
 style = lower(o.Style);
@@ -88,7 +91,11 @@ if strcmp(style, 'prep') && EEG.srate > 100
     X = filtfiltFast(B, X);
 end
 
-% windows
+% windows. A window that straddles a boundary event holds two pieces of
+% recording with a jump between them, which would look like a bad channel in
+% every channel at once, so those windows are left out. (PREP itself refuses
+% to run on data with boundary events at all: ignoreBoundaryEvents is false
+% by default and it aborts.)
 if isempty(o.Windows)
     frames  = o.WindowSeconds * EEG.srate;
     starts  = 1:frames:(size(X, 1) - frames);         % PREP drops the tail
@@ -96,7 +103,19 @@ if isempty(o.Windows)
 else
     windows = round(o.Windows);
 end
+dropped = 0;
+if o.SkipBoundaries
+    bnd = boundaryLatencies(EEG);
+    if ~isempty(bnd)
+        crosses = any(bnd(:)' > windows(:,1) & bnd(:)' < windows(:,2), 2);
+        dropped = nnz(crosses);
+        windows = windows(~crosses, :);
+    end
+end
 nWin = size(windows, 1);
+if nWin < 1
+    error('eeg_ransac:NoWindows', 'No window survives: the data are cut up by boundary events.');
+end
 
 % one reconstruction matrix per random subset: rows of the subset map to
 % every channel (m x m), all subsets side by side (m x m*Draws)
@@ -129,7 +148,18 @@ for w = 1:nWin
 end
 
 info = struct('chans', chans, 'windows', windows, 'sd', SD, ...
-    'subsetSize', subsetSize, 'draws', o.Draws, 'seed', o.Seed);
+    'subsetSize', subsetSize, 'draws', o.Draws, 'seed', o.Seed, ...
+    'droppedWindows', dropped);
+end
+
+% -----------------------------------------------------------------------------
+function lat = boundaryLatencies(EEG)
+lat = [];
+if isfield(EEG, 'event') && ~isempty(EEG.event) && isfield(EEG.event, 'type')
+    isB = strcmpi({EEG.event.type}, 'boundary');
+    lat = [EEG.event(isB).latency];
+    lat = lat(lat > 1 & lat < EEG.pnts);
+end
 end
 
 % -----------------------------------------------------------------------------

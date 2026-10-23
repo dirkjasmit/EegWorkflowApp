@@ -1,0 +1,72 @@
+{
+  "name": "DISCOVER-EEG",
+  "order": 3,
+  "steps": [
+    "Lookup",
+    "Rm ~EEG ch",
+    "Resample",
+    "Line noise",
+    "Bad chans",
+    "Rereference",
+    "ICA"
+  ],
+  "settings": {
+    "resample": {
+      "srate": "250"
+    },
+    "cleanline": {
+      "method": "CleanLine (fast)",
+      "harmonics": "0"
+    },
+    "excessive_signal": {
+      "use_z": "0",
+      "use_sd": "0",
+      "use_flatline": "1",
+      "flatline": "5",
+      "use_minr": "1",
+      "minr": "0.8",
+      "use_noise": "1",
+      "noise": "4",
+      "use_drift": "1",
+      "drift": "0.25-0.75",
+      "maxbadtime": "0.5",
+      "use_ransac": "0"
+    },
+    "rereference": {
+      "refchans": "Average",
+      "interpremoved": "1"
+    },
+    "ICA": {
+      "pca": "250",
+      "use_muscle": "1",
+      "muscle": "0.8",
+      "use_eye": "1",
+      "eye": "0.8",
+      "use_heart": "0",
+      "use_linenoise": "0",
+      "use_channoise": "0",
+      "use_other": "0",
+      "repburst": "20",
+      "repwindow": "0.25",
+      "discovereeg": "1",
+      "extended": "0"
+    }
+  },
+  "controls": {
+    "ICAtypeDropDown": "runica",
+    "ICANumberDropDown": "10"
+  },
+  "notes": [
+    "DISCOVER-EEG: 250 Hz, CleanLine, clean_rawdata bad channels (flatline 5 s, r 0.8, line noise 4 SD, 0.25-0.75 Hz high-pass), average reference, 10 x runica at data rank with the most typical run kept, ICLabel Muscle/Eye >= 0.8 removed, then its bad segments (burst 20, window 0.25) removed",
+    "the channels removed by Bad channels are interpolated back after the component subtraction (DISCOVER-EEG step 5), before its bad segments are cut out",
+    "DISCOVER-EEG runs plain runica (pop_runica without 'extended'), so this preset switches Extended Infomax off; the app's own default is on"
+  ],
+  "check": [
+    "Lookup: the montage of your system, and whether a reference channel is added",
+    "Line frequency: 50 Hz (Europe) or 60 Hz (Americas)",
+    "Open: how your files are read"
+  ],
+  "batch": {
+    "prefix": "disc_"
+  }
+}

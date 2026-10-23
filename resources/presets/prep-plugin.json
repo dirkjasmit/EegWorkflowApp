@@ -1,0 +1,37 @@
+{
+  "name": "PREP (plugin)",
+  "order": 4,
+  "steps": [
+    "Lookup",
+    "Rm ~EEG ch",
+    "Execute code"
+  ],
+  "settings": {},
+  "controls": {},
+  "code": [
+    "% PREP pipeline (PrepPipeline plugin): line noise + robust average reference",
+    "% line frequency: 60*(1:4) in the Americas, 50*(1:4) in Europe",
+    "eegchans = find(~cellfun(@isempty, {EEG.chanlocs.X}));",
+    "prepparams = struct('lineFrequencies', 60*(1:4), ...",
+    "    'referenceChannels', eegchans, 'evaluationChannels', eegchans, ...",
+    "    'rereferencedChannels', 1:EEG.nbchan, 'keepFiltered', false);",
+    "[EEG, prepparams] = prepPipeline(EEG, prepparams);",
+    "disp(['PREP bad channels: ' strjoin({EEG.chanlocs(EEG.etc.noiseDetection.reference.badChannels.all).labels}, ' ')]);"
+  ],
+  "requires": "PrepPipeline",
+  "notes": [
+    "PREP: the plugin's own prepPipeline in the Execute code box, which does all of it - a 1 Hz detrend for the computation, line noise at the first four harmonics (PREP's own multitaper removal, not the CleanLine plugin), bad channels (deviation, correlation, HF noise, RANSAC) and the robust average reference with those channels interpolated",
+    "set the line frequency in the code box: 60*(1:4) for the Americas, 50*(1:4) in Europe",
+    "only Lookup and Remove ~EEG come first, because the reference needs located EEG channels; PREP itself does not resample or filter",
+    "without the plugin: Rereference with 'Robust average (PREP)' does the referencing part and Line noise the rest",
+    "needs the PrepPipeline plugin, and it ABORTS on data with boundary events (its ignoreBoundaryEvents is false by default), which is why the plugin-free PREP preset exists"
+  ],
+  "check": [
+    "Lookup: the montage of your system, and whether a reference channel is added",
+    "Line frequency: in the Execute code box, 60*(1:4) or 50*(1:4)",
+    "Open: how your files are read"
+  ],
+  "batch": {
+    "prefix": "prep_"
+  }
+}

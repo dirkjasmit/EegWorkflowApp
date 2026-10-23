@@ -14,10 +14,14 @@ classdef EegBatch
 %              .outputdir  folder the results are written to
 %              .steps      chosen step indices, in the order of the slots
 %              .labels     their labels
-%   onPreset optional; when given, a Pipeline row offers PREP, Autoreject
-%            and DISCOVER-EEG buttons. After confirmation onPreset(name) is
-%            called (it changes the settings) and returns the step labels,
-%            which replace the step slots.
+%   onSave   optional; called by Save... as onSave(name, labels, prefix) and
+%            expected to write the preset and return the file name.
+%   onPreset optional; when given, a Pipeline row offers one button per
+%            preset file (EegPreset.list). After confirmation onPreset(name)
+%            is called: it writes the settings of that preset and returns
+%            {steps, check, prefix}, and the steps replace the step slots.
+%            The row also holds Save..., which writes the current settings,
+%            steps and prefix as a preset of the user's own.
 %
 %   The window returns at once and does NOT use uiwait: it is opened from an
 %   App Designer callback, and a uifigure cannot dispatch its own buttons
@@ -37,11 +41,15 @@ classdef EegBatch
     methods (Static)
 
         % ------------------------------------------------------------------
-        function dialog(parentFig, SETTINGSDIR, DEFAULTDIR, steps, onStart, onPreset)
+        function dialog(parentFig, SETTINGSDIR, DEFAULTDIR, steps, onStart, onPreset, onSave)
             if nargin < 6
                 onPreset = [];
             end
+            if nargin < 7
+                onSave = [];
+            end
             hasPresets = isa(onPreset, 'function_handle');
+            hasSave    = isa(onSave, 'function_handle');
             old = findall(groot, 'Type', 'figure', 'Tag', 'EegBatchDialog');
             if ~isempty(old)
                 figure(old(1));
@@ -108,17 +116,23 @@ classdef EegBatch
 
             % ---- pipeline presets ----------------------------------------------
             if hasPresets
-                r = uigridlayout(outer, [1 4]);
+                presets = EegPreset.list(SETTINGSDIR);
+                names   = {presets.name};
+                r = uigridlayout(outer, [1 numel(names) + 2]);
                 r.Layout.Row   = 5;
-                r.ColumnWidth  = {95, '1x', '1x', '1x'};
+                r.ColumnWidth  = [{70}, repmat({'1x'}, 1, numel(names)), {70}];
                 r.Padding      = [0 0 0 0];
+                r.ColumnSpacing = 4;
                 uilabel(r, 'Text', 'Pipeline');
-                names = {'PREP', 'Autoreject', 'DISCOVER-EEG'};
                 for k = 1:numel(names)
                     b = uibutton(r, 'Text', names{k}, 'ButtonPushedFcn', @(~,~) presetMe(names{k}));
                     b.Tooltip = sprintf(['Fill the steps with the %s pipeline and set the ' ...
-                        'settings of those steps in the main window'], names{k});
+                        'settings of those steps in the main window (%s)'], names{k}, ...
+                        ifthen(presets(k).user, 'your own preset', 'shipped with the app'));
                 end
+                b = uibutton(r, 'Text', 'Save...', 'ButtonPushedFcn', @(~,~) savePreset());
+                b.Tooltip = 'Save the current settings, steps and prefix as a preset of your own';
+                b.Enable  = ifthen(hasSave, 'on', 'off');
             end
 
             % ---- steps -------------------------------------------------------
@@ -146,8 +160,12 @@ classdef EegBatch
                     b.Layout.Row = k; b.Layout.Column = 1 + a;
                 end
                 value = EegBatch.SELECT;
-                if k <= numel(st.labels) && ~isempty(st.labels{k}) && any(strcmp(items, st.labels{k}))
-                    value = st.labels{k};
+                saved = '';
+                if k <= numel(st.labels) && ~isempty(st.labels{k})
+                    saved = EegBatch.renamedStep(st.labels{k});
+                end
+                if ~isempty(saved) && any(strcmp(items, saved))
+                    value = saved;
                 end
                 h.slot(k) = uidropdown(g, 'Items', items, 'Value', value, 'Tag', sprintf('step%02d', k));
                 h.slot(k).Layout.Row = k; h.slot(k).Layout.Column = 6;
@@ -290,12 +308,39 @@ classdef EegBatch
                     'DefaultOption', 1, 'CancelOption', 2, 'CloseFcn', @(~, ev) presetDone(ev, name));
             end
 
+            function savePreset()
+                p = inputdlg({'Name of the preset'}, 'Save preset', [1 40], {'My default'});
+                if isempty(p) || isempty(strtrim(p{1}))
+                    return
+                end
+                try
+                    sel  = collect();
+                    file = onSave(p{1}, sel.labels, sel.prefix);
+                catch E
+                    uialert(fig, E.message, 'Save preset');
+                    return
+                end
+                uialert(fig, sprintf(['Saved as %s.' newline newline 'It holds every setting as it is now, ' ...
+                    'the steps below and the prefix. Close and reopen this window to see its button.'], file), ...
+                    'Save preset', 'Icon', 'success');
+            end
+
             function presetDone(ev, name)
                 if ~strcmp(ev.SelectedOption, 'Set up')
                     return
                 end
+                check = {};
                 try
-                    labels = onPreset(name);
+                    out = onPreset(name);
+                    if iscell(out) && numel(out) >= 2
+                        labels = out{1};
+                        check  = out{2};
+                        if numel(out) >= 3 && ~isempty(out{3})
+                            h.prefix.Value = out{3};
+                        end
+                    else
+                        labels = out;
+                    end
                 catch E
                     uialert(fig, E.message, 'Pipeline preset');
                     return
@@ -317,13 +362,9 @@ classdef EegBatch
                 % the recording it cannot know, so say so plainly
                 msg = {sprintf('The %s steps are set and the settings of those steps are written.', name)
                        ''
-                       'Check the settings that follow the RECORDING, not the pipeline:'
-                       '  - Lookup: the montage of your system, and whether a reference channel is added'
-                       '  - Line frequency: 50 Hz (Europe) or 60 Hz (Americas)'
-                       '  - Open: how your files are read'};
-                if strcmpi(name, 'PREP')
-                    msg{end+1} = '';
-                    msg{end+1} = 'For PREP the line frequency is in the Execute code box: 60*(1:4) or 50*(1:4).';
+                       'Check the settings that follow the RECORDING, not the pipeline:'};
+                for c = 1:numel(check)
+                    msg{end+1} = ['  - ' check{c}]; %#ok<AGROW>
                 end
                 msg{end+1} = '';
                 msg{end+1} = 'Walk through the steps in the main window before pressing Start.';
@@ -360,6 +401,23 @@ classdef EegBatch
         % ------------------------------------------------------------------
         % What was set last time. Unknown keys and labels that no longer exist
         % are ignored, so the step list can change between versions.
+        % ------------------------------------------------------------------
+        % Step labels as they were written before they were made to match the
+        % button texts, so a saved recipe keeps working.
+        function label = renamedStep(label)
+            old = {'Bad channels', 'Bad chans'
+                   'Cleanline', 'Line noise'
+                   'Remove ~EEG', 'Rm ~EEG ch'
+                   'Interpolation periods', 'Interpolation Clean'
+                   'Remove 1st s', 'Rm first 1s'
+                   'Remove last s', 'Rm last 1s'};
+            k = find(strcmp(old(:,1), label), 1);
+            if ~isempty(k)
+                label = old{k,2};
+            end
+        end
+
+        % ------------------------------------------------------------------
         function st = loadState(SETTINGSDIR)
             st = struct('prefix', 'c_', 'folder', '', ...
                         'outputdir', '', 'labels', {{}}, 'files', {{}});

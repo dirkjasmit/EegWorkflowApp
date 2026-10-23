@@ -1,0 +1,38 @@
+{
+  "name": "Autoreject",
+  "order": 2,
+  "steps": [
+    "Lookup",
+    "Rm ~EEG ch",
+    "Filter",
+    "Interpolation Clean"
+  ],
+  "settings": {
+    "filter": {
+      "low": "1",
+      "high": "40",
+      "type": "FIR"
+    },
+    "interpolation_clean": {
+      "method": "Autoreject",
+      "epochlen": "1",
+      "overlap": "0",
+      "mergegap": "0",
+      "ar_folds": "10"
+    }
+  },
+  "controls": {},
+  "notes": [
+    "Autoreject: 1-40 Hz band-pass, then local autoreject on 1 s epochs (10-fold cross-validation of the per-channel thresholds, of rho and of kappa): bad channels interpolated within their epoch, epochs with too many bad channels removed",
+    "nothing else belongs to it: the example removes no line noise (the 40 Hz low-pass takes care of it), does not resample, does not reference, and leaves the bad channels to autoreject",
+    "eye artefacts are not covered either; add the ICA step before Interpolation periods when they matter"
+  ],
+  "check": [
+    "Lookup: the montage of your system, and whether a reference channel is added",
+    "Line frequency: 50 Hz (Europe) or 60 Hz (Americas)",
+    "Open: how your files are read"
+  ],
+  "batch": {
+    "prefix": "ar_"
+  }
+}

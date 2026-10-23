@@ -1,0 +1,53 @@
+{
+  "name": "PREP",
+  "order": 1,
+  "steps": [
+    "Lookup",
+    "Rm ~EEG ch",
+    "Line noise",
+    "Rereference",
+    "Filter"
+  ],
+  "settings": {
+    "cleanline": {
+      "method": "CleanLine (fast)",
+      "harmonics": "1"
+    },
+    "rereference": {
+      "refchans": "Robust average (PREP)",
+      "robustiter": "4",
+      "robustdev": "5",
+      "robustcorr": "0.4",
+      "robustcorrwin": "1",
+      "robustbadtime": "0.01",
+      "robusthf": "5",
+      "robustransac": "1",
+      "robustransac_r": "0.75",
+      "robustransac_maxbad": "0.4",
+      "robustransac_window": "5",
+      "robustransac_draws": "50",
+      "robustransac_fraction": "0.25",
+      "robustinterp": "1"
+    },
+    "filter": {
+      "low": "1",
+      "high": "0",
+      "type": "FIR"
+    }
+  },
+  "controls": {},
+  "batch": {
+    "prefix": "prep_"
+  },
+  "check": [
+    "Lookup: the montage of your system, and whether a reference channel is added",
+    "Line frequency: 50 Hz (Europe) or 60 Hz (Americas)",
+    "Open: how your files are read"
+  ],
+  "notes": [
+    "PREP without the plugin: line noise at all harmonics, then the robust average reference (eeg_robustref) with PREP's own values - 4 iterations, deviation z 5, correlation 0.4 in 1 s windows with bad time 0.01, HF noise z 5, RANSAC 0.75 in more than 40% of 5 s windows from 50 subsets of 25% of the channels, bad channels interpolated afterwards (post-reference)",
+    "the closing Filter is PREP's post-processing step with keepFiltered on: a 1 Hz high-pass and no low-pass. PREP's own 1 Hz detrend during the pipeline runs on a copy and is only used to find the bad channels, so without this step the output keeps its slow drift",
+    "unlike the plugin this runs on data with boundary events: windows that cross one are left out of the tests, where PREP aborts instead",
+    "differences from the plugin: PREP removes line noise with its own multitaper code (here CleanLine (fast), the same algorithm), its dropout test is not included, and PREP cleans the line noise on the detrended copy and transplants the difference"
+  ]
+}

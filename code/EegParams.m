@@ -180,7 +180,15 @@ classdef EegParams
                             continue
                         end
                         if ~any(strcmpi(items, T.value(i)))
-                            T.value(i) = string(items{1});
+                            % a saved value that no longer is an item: when an
+                            % item starts with it, take the first such one, so
+                            % that renaming 'CleanLine' to 'CleanLine (fast)'
+                            % keeps a saved setting on the method it meant
+                            hit = find(startsWith(string(items), string(T.value(i)), 'IgnoreCase', true), 1);
+                            if isempty(hit)
+                                hit = 1;
+                            end
+                            T.value(i) = string(items{hit});
                         end
                 end
             end
