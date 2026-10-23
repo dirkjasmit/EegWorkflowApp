@@ -525,6 +525,7 @@ classdef EegCallbacks
                     ifthen(useMinr, sprintf('%.2f', P('minr')), 'off'), ...
                     ifthen(useNoise, sprintf('%g SD', P('noise')), 'off'), ...
                     ifthen(useDrift, sprintf('%g-%g Hz', band), 'off'), P('maxbadtime'));
+                ram = EegCallbacks.ramArg(EegParams.get(data.params, 'asr', 'maxmem'));
                 [tmp, cmd] = pop_clean_rawdata(tmp, ...
                     'FlatlineCriterion', ifthen(useFlat, P('flatline'), 'off'), ...
                     'ChannelCriterion', chanArg, ...
@@ -532,7 +533,7 @@ classdef EegCallbacks
                     'Highpass', ifthen(useDrift, band, 'off'), ...
                     'BurstCriterion', 'off', 'WindowCriterion', 'off', 'BurstRejection', 'off', ...
                     'Distance', 'Euclidian', ...
-                    'ChannelCriterionMaxBadTime', P('maxbadtime'));
+                    'ChannelCriterionMaxBadTime', P('maxbadtime'), ram{:});
                 tmp.history = [tmp.history newline cmd];
                 gone = setdiff(before, {tmp.chanlocs.labels}, 'stable');
                 say('  removed %d: %s', numel(gone), strjoin(gone, ' '));
@@ -1458,7 +1459,8 @@ classdef EegCallbacks
                         scored = EegCallbacks.restoreRemovedChannels(scored);
                     end
                     masks(r,:) = EegCallbacks.badSegmentMask(scored, ...
-                        P('ICA','repburst'), P('ICA','repwindow')); %#ok<AGROW>
+                        P('ICA','repburst'), P('ICA','repwindow'), ...
+                        EegCallbacks.ramArg(P('asr','maxmem'))); %#ok<AGROW>
                     say('- run %d: %d components flagged, %.1f s would be marked bad', ...
                         r, sum(reject), sum(~masks(r,:))/tmp.srate);
                 end
@@ -3096,6 +3098,78 @@ classdef EegCallbacks
         end
 
         % ------------------------------------------------------------------
+        % {'availableRAM_GB', gb} for pop_clean_rawdata, or {} to leave it to
+        % the plugin. Its own default is 64 MB, which splits the data into
+        % many blocks: ASR then restarts its update grid at every block, which
+        % costs about three times the run time (29.5 s -> 8.3 s measured on a
+        % 129-channel, 190 s recording) and changes the cleaned data a little.
+        function ram = ramArg(gb)
+            ram = {};
+            if isnumeric(gb) && isscalar(gb) && gb > 0
+                ram = {'availableRAM_GB', gb};
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % clean_rawdata with the burst step done by asr_process_fast, in the
+        % order clean_artifacts uses: flatline, drift, channels and line noise
+        % first, then ASR, then the window criterion. Burst rejection marks
+        % the samples ASR changed, exactly as clean_artifacts does.
+        function [EEG, cmd] = cleanRawdataFastAsr(app, EEG, P, onoff, ram)
+            say = @(varargin) EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf(varargin{:}));
+            burst  = P('burstcriterion');
+            window = P('windowcriterion');
+            chanArg = onoff(P('chanminr'));
+            if ~P('chanminr') && P('linenoise') > 0
+                chanArg = -1;                 % the line-noise test needs a number
+            end
+            % 1. everything except the burst and window steps
+            [EEG, cmd] = pop_clean_rawdata(EEG, ...
+                'FlatlineCriterion', onoff(P('flatline')), ...
+                'ChannelCriterion', chanArg, ...
+                'LineNoiseCriterion', onoff(P('linenoise')), ...
+                'Highpass', ifthen(P('highpass'), [0.25 0.75], 'off'), ...
+                'BurstCriterion', 'off', 'WindowCriterion', 'off', 'BurstRejection', 'off', ...
+                'Distance', 'Euclidian', ...
+                'ChannelCriterionMaxBadTime', P('maxbadtime'), ram{:});
+            % 2. the burst step
+            before = double(EEG.data);
+            mem = 64;                                % clean_asr's own default
+            if numel(ram) == 2, mem = ram{2}*1000; end
+            BUR = clean_asr_faster(EEG, burst, [], [], [], [], [], [], 1, mem);
+            cmd = sprintf('%s %% then clean_asr_faster(EEG, %g)', cmd, burst);
+            if P('burstdelete')
+                % the samples ASR changed are the bad ones (clean_artifacts)
+                mask = sum(abs(before - double(BUR.data)), 1) < 1e-8;
+                keep = reshape(find(diff([false mask false])), 2, [])';
+                if ~isempty(keep)
+                    keep(:,2) = keep(:,2) - 1;
+                    tiny = diff(keep')' < 5;          % drop stretches under 5 samples
+                    for k = find(tiny)'
+                        mask(keep(k,1):keep(k,2)) = 0;
+                    end
+                    keep(tiny, :) = [];
+                end
+                say('  removing the bursts: %.1f%% of the data', 100*mean(~mask));
+                EEG = pop_select(EEG, 'point', keep);
+                EEG.etc.clean_sample_mask = mask;
+            else
+                EEG.data = cast(BUR.data, 'like', EEG.data);
+                EEG.etc.clean_asr_faster = BUR.etc.clean_asr_faster;
+            end
+            % 3. the window criterion, on the corrected data
+            if window > 0
+                [EEG, cmd2] = pop_clean_rawdata(EEG, ...
+                    'FlatlineCriterion', 'off', 'ChannelCriterion', 'off', ...
+                    'LineNoiseCriterion', 'off', 'Highpass', 'off', ...
+                    'BurstCriterion', 'off', 'WindowCriterion', window, ...
+                    'BurstRejection', 'off', 'Distance', 'Euclidian', ...
+                    'WindowCriterionTolerances', [-Inf 7], ram{:});
+                cmd = sprintf('%s %s', cmd, cmd2);
+            end
+        end
+
+        % ------------------------------------------------------------------
         % Scratch files binica leaves behind: binica<n>.sc/.fdt/.wts/.sph/
         % .inwts, binicatmp<n>.wts and the binary's bias_after_adjust. binica
         % always writes them in the CURRENT folder (see binica.m: fullfile(pwd,
@@ -3335,6 +3409,15 @@ classdef EegCallbacks
                 ifthen(P('highpass'), '0.25-0.75 Hz', 'off'), ifthen(burst > 0, sprintf('%g SD', burst), 'off'), ...
                 ifthen(P('burstdelete'), 'removed', 'corrected'), ifthen(window > 0, sprintf('%.2f', window), 'off'));
 
+            ram = EegCallbacks.ramArg(P('maxmem'));
+            fast = logical(P('fastasr')) && burst > 0;
+            if fast
+                % the burst step runs separately, in the same order
+                % clean_artifacts uses: channels first, then ASR, then the
+                % window criterion
+                say('- fast ASR: asr_process_fast, deterministic (same algorithm, no memory blocks)');
+                [tmp, cmd] = EegCallbacks.cleanRawdataFastAsr(app, data.EEG, P, onoff, ram);
+            else
             [tmp, cmd] = pop_clean_rawdata(data.EEG, ...
                 'FlatlineCriterion', onoff(flat), ...
                 'ChannelCriterion', chanArg, ...
@@ -3345,7 +3428,8 @@ classdef EegCallbacks
                 'WindowCriterion', onoff(window), ...
                 'BurstRejection', ifthen(P('burstdelete'), 'on', 'off'), ...
                 'Distance', 'Euclidian', ...
-                'ChannelCriterionMaxBadTime', P('maxbadtime'));
+                'ChannelCriterionMaxBadTime', P('maxbadtime'), ram{:});
+            end
             tmp.history = [tmp.history newline cmd];
 
             % short stretches left between the cut-out bursts
@@ -3525,12 +3609,13 @@ classdef EegCallbacks
         % Samples clean_rawdata would keep (true) in a bad-segments-only pass,
         % with the settings DISCOVER-EEG uses for its step 6. Only used to
         % compare ICA runs; the data itself are not changed here.
-        function mask = badSegmentMask(EEG, burst, window)
+        function mask = badSegmentMask(EEG, burst, window, ram)
+            if nargin < 4, ram = {}; end
             EEG.icaweights = []; EEG.icasphere = []; EEG.icawinv = []; EEG.icaact = []; EEG.icachansind = [];
             out = pop_clean_rawdata(EEG, 'FlatlineCriterion', 'off', 'ChannelCriterion', 'off', ...
                 'LineNoiseCriterion', 'off', 'Highpass', 'off', ...
                 'BurstCriterion', burst, 'WindowCriterion', ifthen(window > 0, window, 'off'), ...
-                'BurstRejection', 'on', 'Distance', 'Euclidian', 'WindowCriterionTolerances', [-Inf 7]);
+                'BurstRejection', 'on', 'Distance', 'Euclidian', 'WindowCriterionTolerances', [-Inf 7], ram{:});
             if isfield(out, 'etc') && isfield(out.etc, 'clean_sample_mask')
                 mask = logical(out.etc.clean_sample_mask(:)');
             else

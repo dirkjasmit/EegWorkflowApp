@@ -50,6 +50,10 @@
       "repwindow": "0.25",
       "discovereeg": "1",
       "extended": "0"
+    },
+    "asr": {
+      "maxmem": "0",
+      "fastasr": "0"
     }
   },
   "controls": {
@@ -59,7 +63,9 @@
   "notes": [
     "DISCOVER-EEG: 250 Hz, CleanLine, clean_rawdata bad channels (flatline 5 s, r 0.8, line noise 4 SD, 0.25-0.75 Hz high-pass), average reference, 10 x runica at data rank with the most typical run kept, ICLabel Muscle/Eye >= 0.8 removed, then its bad segments (burst 20, window 0.25) removed",
     "the channels removed by Bad channels are interpolated back after the component subtraction (DISCOVER-EEG step 5), before its bad segments are cut out",
-    "DISCOVER-EEG runs plain runica (pop_runica without 'extended'), so this preset switches Extended Infomax off; the app's own default is on"
+    "DISCOVER-EEG runs plain runica (pop_runica without 'extended'), so this preset switches Extended Infomax off; the app's own default is on",
+    "ASR working memory is left at clean_rawdata's own 64 MB, as DISCOVER-EEG calls pop_clean_rawdata without a memory setting; the app's default of 1 GB is about three times faster but splits the data differently",
+    "ASR runs through the clean_rawdata plugin (Fast ASR off), as DISCOVER-EEG uses pop_clean_rawdata itself"
   ],
   "check": [
     "Lookup: the montage of your system, and whether a reference channel is added",
