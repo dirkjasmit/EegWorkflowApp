@@ -1177,13 +1177,21 @@ classdef EegCallbacks
             P = @(b,p) EegParams.get(data.params, b, p);
             set(app.pushbuttonEMG,'backgroundcolor',EegCallbacks.ColBusy)
             pause(0.005);
-            EegCallbacks.AddToListbox(app, app.listboxStdout, 'Clean data of muscle actvit using AAR in 40s windows.');
             tmp = data.EEG;
             ws = P('emg','winlen');
             ss = P('emg','winshift');
-            tmp = pop_autobssemg(tmp, ws, ss, 'bsscca', {'eigratio', [1000000]}, ...
-                'emg_psd', {'ratio', [10],'fs', [256],'femg', [15],...
-                'estimator', spectrum.welch, 'range', [0  34]});
+            EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf( ...
+                'Clean data of muscle activity by BSS-CCA in %g s windows (shift %g s).', ws, ss));
+            % clean_emg_faster reproduces pop_autobssemg with the settings
+            % below and needs no AAR plugin; see its header for the credits
+            [tmp, emginfo] = clean_emg_faster(tmp, ws, ss, 'eigratio', 1e6, ...
+                'ratio', 10, 'femg', 15, 'range', [0 34], 'verbose', false);
+            if emginfo.nwindows > 0
+                EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf( ...
+                    '- %d windows, %.1f components removed on average (most %d of %d).', ...
+                    emginfo.nwindows, mean(emginfo.nremoved, 'omitnan'), ...
+                    max(emginfo.nremoved), max(emginfo.ncomponents)));
+            end
             data = EegCallbacks.pushUndo(app, event, data, data.EEG, 'EMG');
             data.EEG = tmp;
             guidata(hObject, data);
@@ -2460,14 +2468,6 @@ classdef EegCallbacks
             set(line([30 30], ylim), 'linestyle', '--');
         end
 
-        % Overwrite/skip button callback (bound to a uicontrol in the dialog)
-        function buttonCallback(app, f, choice) %#ok<INUSL>
-            global skipOverwrite_choice %#ok<GVMIS>
-            skipOverwrite_choice = choice;
-            uiresume(f);
-            delete(f);
-        end
-
         % Button pushed function: pushbuttonEditCode
         function pushbuttonEditCodeButtonPushed(app, event) %#ok<INUSD>
             EegCallbacks.openBigEditor(app);
@@ -2531,7 +2531,6 @@ classdef EegCallbacks
         % Button pushed function: pbBatch_v2
         function pbBatchButtonPushed(app, event) %#ok<INUSD>
             hObject = app.eeg_workflow;
-            global skipOverwrite_choice %#ok<GVMIS>
             data = guidata(hObject);
 
 
@@ -2613,7 +2612,6 @@ classdef EegCallbacks
         % the indices into the step list built above, in the chosen order.
         function runBatch(app, sel)
             hObject = app.eeg_workflow;
-            global skipOverwrite_choice %#ok<GVMIS>
             data = guidata(hObject);
             data.batchfilenames = sel.files;
             data.batchpathname  = sel.folder;
@@ -2627,24 +2625,29 @@ classdef EegCallbacks
                 resultTable = [];
                 data.batchfilenamesout = {};
                 for f=1:length(data.batchfilenames)
-                    [~, Fname, Fext] = fileparts(data.batchfilenames{f});
-                    FNOut = [data.batchoutputdir '/' sprintf('%s%s%s', data.batchprefix, Fname, Fext)];
+                    [~, Fname] = fileparts(data.batchfilenames{f});
+                    % pop_saveset always writes .set, whatever the input was,
+                    % so the file to look for is the .set one
+                    FNOut = fullfile(data.batchoutputdir, sprintf('%s%s.set', data.batchprefix, Fname));
                     data.batchfilenamesout{end+1} = FNOut;
                 end
-                ex = false;
-                for f=1:length(data.batchfilenamesout)
-                    if exist(data.batchfilenamesout{f},'file')
-                        ex = true;
-                        break
+                exists = cellfun(@(f) exist(f, 'file') == 2, data.batchfilenamesout);
+                choice = 'overwrite';
+                if any(exists)
+                    choice = EegCallbacks.skip_or_overwrite_dialog(app, nnz(exists), numel(exists));
+                    EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf( ...
+                        '- %d of %d output files already exist: %s', nnz(exists), numel(exists), choice));
+                    if strcmpi(choice, 'cancel')
+                        EegCallbacks.AddToListbox(app, app.listboxStdout, ' *** batch cancelled, nothing was processed ***');
+                        return
                     end
-                end
-                if ex
-                    EegCallbacks.skip_or_overwrite_dialog(app);
                 end
                 for f=1:length(data.batchfilenames)
                     try
                         FNOut = data.batchfilenamesout{f};
-                        if exist(FNOut) && strcmpi(skipOverwrite_choice, 'skip')
+                        if exists(f) && strcmpi(choice, 'skip')
+                            EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf( ...
+                                '- skipped %s: output exists', data.batchfilenames{f}));
                             continue
                         end
                         [Fpath, Fname, Fext] = fileparts(data.batchfilenames{f});
@@ -4438,21 +4441,40 @@ classdef EegCallbacks
         end
 
         % ------------------------------------------------------------------
-        function skip_or_overwrite_dialog(app)
-            fig = uifigure('Name', 'Action Required', 'Position', [500 500 300 150]);
-            uilabel(fig, ...
-                'Text', 'Some output files exists. What would you like to do?', ...
-                'Position', [25 80 250 40], ...
-                'HorizontalAlignment', 'center');
-            uibutton(fig, 'push', ...
-                'Text', 'Skip all', ...
-                'Position', [50 30 80 30], ...
-                'ButtonPushedFcn', @(btn,event) EegCallbacks.buttonCallback(app, fig, 'skip'));
-            uibutton(fig, 'push', ...
-                'Text', 'Overwrite', ...
-                'Position', [170 30 80 30], ...
-                'ButtonPushedFcn', @(btn,event) EegCallbacks.buttonCallback(app, fig, 'overwrite'));
+        % Asks what to do when output files are already there. Returns
+        % 'skip', 'overwrite' or 'cancel'; closing the window is 'cancel'.
+        % The answer is returned, not left in a global: a global survives the
+        % session, so a 'skip' chosen in an earlier batch would silently skip
+        % files in the next one.
+        function choice = skip_or_overwrite_dialog(app, nExisting, nTotal)
+            choice = 'cancel';
+            fig = uifigure('Name', 'Output files exist', 'Position', [100 100 420 160]);
+            try
+                movegui(fig, 'center');
+                pp = app.eeg_workflow.Position;      % next to the main window
+                fig.Position(1:2) = [pp(1) + 60, pp(2) + max(0, pp(4) - 260)];
+            catch
+            end
+            uilabel(fig, 'Position', [20 95 380 50], 'WordWrap', 'on', ...
+                'HorizontalAlignment', 'center', 'Text', sprintf( ...
+                ['%d of the %d output files already exist in the output folder.' newline ...
+                 'What should happen to those files?'], nExisting, nTotal));
+            uibutton(fig, 'push', 'Text', 'Skip them', 'Position', [25 30 110 32], ...
+                'Tooltip', 'Leave the existing files alone and process only the rest', ...
+                'ButtonPushedFcn', @(~,~) done('skip'));
+            uibutton(fig, 'push', 'Text', 'Overwrite', 'Position', [155 30 110 32], ...
+                'Tooltip', 'Process every file and replace the existing output', ...
+                'ButtonPushedFcn', @(~,~) done('overwrite'));
+            uibutton(fig, 'push', 'Text', 'Cancel', 'Position', [285 30 110 32], ...
+                'Tooltip', 'Do not run the batch at all', ...
+                'ButtonPushedFcn', @(~,~) done('cancel'));
+            fig.CloseRequestFcn = @(~,~) done('cancel');
             uiwait(fig);
+            function done(c)
+                choice = c;
+                uiresume(fig);
+                delete(fig);
+            end
         end
 
         % ------------------------------------------------------------------

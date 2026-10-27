@@ -20,3 +20,7 @@ temp.set
 # PREP pipeline report output (written in the current folder by prepReport)
 Report.pdf
 Summary.html
+
+# validation runs over the Necker-cube set: scripts are kept out of the
+# repository together with their (large) output
+validation/
