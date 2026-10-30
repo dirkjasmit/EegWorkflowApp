@@ -612,16 +612,50 @@ classdef EegCallbacks
                 EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf( ...
                     '- non-integer ratio %g -> %g Hz, using %s', fs_old, fs_new, ifthen(useSpline, 'spline interpolation (no anti-aliasing)', 'pop_resample')));
             end
+            % Take the DC offset out before resampling. With a non-integer
+            % ratio pop_resample upsamples by p before it decimates, which
+            % replicates the spectrum at every multiple of the old sampling
+            % rate; its anti-aliasing filter holds those images down by only
+            % about 54 dB, so the offset of a raw recording (thousands of uV
+            % in a BDF) leaks through and folds back as a comb at multiples
+            % of mod(fs_old, fs_new) - 24 Hz for 1024 -> 250, inside the beta
+            % band. The mean is not put back: the data stay demeaned.
+            % See docs/resample_imaging.md.
+            doDemean = true;
+            try
+                doDemean = EegParams.get(data.params, 'resample', 'demean');
+            catch
+            end
+            if doDemean
+                dc = mean(double(tmp.data(:,:)), 2);
+                tmp.data = tmp.data - cast(dc, 'like', tmp.data);
+                if ~isint
+                    EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf( ...
+                        '- demeaned first (mean |DC| %.0f uV); it would otherwise fold back at multiples of %g Hz', ...
+                        mean(abs(dc)), mod(fs_old, fs_new)));
+                else
+                    EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf( ...
+                        '- demeaned first (mean |DC| %.0f uV)', mean(abs(dc))));
+                end
+                tmp.history = [tmp.history char(uint8(10)) ...
+                    '% EEG.data = EEG.data - mean(EEG.data, 2); % before resampling'];
+            elseif ~isint
+                EegCallbacks.AddToListbox(app, app.listboxStdout, sprintf( ...
+                    '*** warning *** not demeaned: a DC offset folds back at multiples of %g Hz (see docs/resample_imaging.md)', ...
+                    mod(fs_old, fs_new)));
+            end
+
             if ~useSpline
                 [tmp, cmd] = pop_resample(tmp, fs_new);
             else
                 warning('Resampling by spline interpolation!')
+                src   = double(tmp.data(:,:));      % the demeaned data, not data.EEG
                 dummy = pop_resample(tmp, fs_new);
                 t_old = (0:tmp.pnts-1)/fs_old;
                 t_new = (0:dummy.pnts-1)/fs_new;
                 tmp = dummy;
                 for ch=1:tmp.nbchan
-                    tmp.data(ch,:) = interp1(t_old, data.EEG.data(ch,:), t_new, 'spline');
+                    tmp.data(ch,:) = interp1(t_old, src(ch,:), t_new, 'spline');
                 end
                 cmd = '% custom spline resampling';
             end
@@ -2795,6 +2829,11 @@ classdef EegCallbacks
             title(ax, src.Title.String, 'Interpreter', 'none');
             xlabel(ax, 'Frequency (Hz)');
             ylabel(ax, 'Power (dB)');
+            sel = findall(src, 'Tag', 'trackSelect');     % which channels are averaged
+            if ~isempty(sel)
+                c = copyobj(sel(1), ax);
+                c.FontSize = 11;
+            end
             if ~isempty(findobj(ax, 'Tag', 'trackMean'))
                 legend(ax, 'show', 'Location', 'northeast', 'Interpreter', 'none');
             end
@@ -3339,9 +3378,33 @@ classdef EegCallbacks
             end
         end
 
+        % ------------------------------------------------------------------
+        % Value changed function: dropdownTrackSelect
+        % The spectrum tracker averages over a region of the head: all,
+        % anterior, central, posterior, left, medial or right. Every line
+        % already drawn is recomputed from the per-channel spectra kept with
+        % it, so the whole history follows the choice and no spectrum is
+        % computed again. A region needs channel locations; without them (or
+        % when a region holds no channel) the tracker falls back to all
+        % channels, which the label in the top right corner states.
+        function dropdownTrackSelect_ValueChanged(app, event) %#ok<INUSD>
+            EegCallbacks.retrackSelection(app);
+        end
+
+        % ------------------------------------------------------------------
+        % The channels of a region of the head, for use outside the tracker.
+        %   [idx, used] = EegCallbacks.regionChannels(EEG, 'anterior')
+        % used is the region actually applied ('all' when the dataset has no
+        % locations, or when the region holds no channel).
+        function [idx, used] = regionChannels(EEG, choice)
+            [mask, used] = EegCallbacks.regionMask(EegCallbacks.unitPositions(EEG), choice);
+            idx = find(mask);
+        end
+
     end % methods (Static)
 
     % ----------------------------------------------------------------------
+
     methods (Static, Access = private)
 
         % ------------------------------------------------------------------
@@ -4025,10 +4088,15 @@ classdef EegCallbacks
                     cla(ax);
                     title(ax, resetTitle, 'Interpreter', 'none', 'FontSize', 9);
                 end
-                [x, m, sd] = EegCallbacks.binnedSpectrum(EEG);
+                [x, D, xyz] = EegCallbacks.channelSpectra(EEG);
                 if isempty(x)
                     return
                 end
+                % the region asked for in dropdownTrackSelect; without
+                % locations this falls back to all channels
+                asked = EegCallbacks.trackSelection(app);
+                [mask, used] = EegCallbacks.regionMask(xyz, asked);
+                [m, sd] = EegCallbacks.spectrumStats(D, mask);
                 % earlier steps: thin lines, no band
                 delete(findall(ax, 'Tag', 'trackSD'));      % findall: the band is hidden from legends
                 set(findobj(ax, 'Tag', 'trackMean'), 'LineWidth', 0.5);
@@ -4050,8 +4118,13 @@ classdef EegCallbacks
                 % can point at it later (the drawing order changes as soon as
                 % a line is brought to the front)
                 idx = numel(findobj(ax, 'Tag', 'trackMean')) + 1;
+                % the per-channel spectra and positions travel with the line,
+                % so the region can be changed afterwards without recomputing
+                ud = struct('depth', depth, 'index', idx);
+                ud.D   = D;
+                ud.xyz = xyz;
                 plot(ax, x, m, 'LineWidth', 1.5, 'Tag', 'trackMean', 'DisplayName', label, ...
-                    'HitTest', 'off', 'UserData', struct('depth', depth, 'index', idx));
+                    'HitTest', 'off', 'UserData', ud);
                 disableDefaultInteractivity(ax);   % no pan/zoom/datatips on the thumbnail
                 hold(ax, 'off');
                 ax.XTickMode = 'auto';
@@ -4084,6 +4157,7 @@ classdef EegCallbacks
                 ax.FontSize = 8;
                 xlabel(ax, 'Hz');
                 ylabel(ax, 'dB');
+                EegCallbacks.trackCorner(ax, used, nnz(mask), asked);
                 % the SD band behind the lines
                 band = findall(ax, 'Tag', 'trackSD');
                 if ~isempty(band)
@@ -4129,14 +4203,34 @@ classdef EegCallbacks
 
         % ------------------------------------------------------------------
         % 1 Hz binned spectrum in dB: x = bin start (Hz), m = mean over
-        % channels, sd = SD over channels.
-        function [x, m, sd] = binnedSpectrum(EEG)
+        % channels, sd = SD over channels. chans selects the channels to
+        % average (default: all of them).
+        function [x, m, sd] = binnedSpectrum(EEG, chans)
+            [x, D] = EegCallbacks.channelSpectra(EEG);
+            if isempty(x)
+                m = []; sd = [];
+                return
+            end
+            if nargin < 2 || isempty(chans)
+                chans = 1:size(D, 2);
+            end
+            [m, sd] = EegCallbacks.spectrumStats(D, chans);
+        end
+
+        % ------------------------------------------------------------------
+        % The same spectrum, but per channel and with the positions, so that
+        % a region of the head can be averaged now or chosen again later.
+        %   x    1 x bins, the bin start in Hz
+        %   D    bins x channels, dB
+        %   xyz  channels x 3 on the unit sphere, NaN for a channel without
+        %        a location
+        function [x, D, xyz] = channelSpectra(EEG)
             win = hanning(2*EEG.srate);
             [P, fs] = pfft(double(EEG.data(:,:))', EEG.srate, win, .5);   % freq x chan
             first = find(fs >= 1, 1);                % skip DC (and 0.5 Hz)
             K = floor((numel(fs) - first + 1) / 2);  % complete 1 Hz bins
             if K < 1
-                x = []; m = []; sd = [];
+                x = []; D = []; xyz = [];
                 return
             end
             r1 = first + 2*(0:K-1);
@@ -4145,8 +4239,176 @@ classdef EegCallbacks
             D  = 10*log10(Pb);
             x  = fs(r1);
             x  = x(:)';
-            m  = mean(D, 2, 'omitnan')';
-            sd = std(D, 0, 2, 'omitnan')';
+            xyz = EegCallbacks.unitPositions(EEG);
+        end
+
+        % ------------------------------------------------------------------
+        % Mean and SD over a set of channels, both 1 x bins.
+        function [m, sd] = spectrumStats(D, chans)
+            m  = mean(D(:, chans), 2, 'omitnan')';
+            sd = std(D(:, chans), 0, 2, 'omitnan')';
+        end
+
+        % ------------------------------------------------------------------
+        % Channel positions on the unit sphere, a NaN row where a channel has
+        % no location. Only the direction matters for deciding which part of
+        % the head a channel is on, so the radius is divided out.
+        function xyz = unitPositions(EEG)
+            n = size(EEG.data, 1);
+            xyz = nan(n, 3);
+            try
+                loc = EEG.chanlocs;
+            catch
+                return
+            end
+            for k = 1:min(n, numel(loc))
+                try
+                    if ~isempty(loc(k).X) && ~isempty(loc(k).Y) && ~isempty(loc(k).Z)
+                        v = double([loc(k).X loc(k).Y loc(k).Z]);
+                        r = sqrt(sum(v.^2));
+                        if r > 0, xyz(k,:) = v/r; end
+                    end
+                catch
+                end
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % Which channels lie in a region of the head. EEGLAB coordinates run
+        % X towards the nose, Y towards the left ear and Z up, so the sign of
+        % X separates anterior from posterior and the sign of Y left from
+        % right. TH is a fraction of the head radius: a channel is anterior
+        % when it sits more than TH in front of the coronal midline and
+        % central when it sits within TH of it, and the same for Y with
+        % left / medial / right.
+        %
+        % Falls back to 'all' when there are no locations or when the region
+        % turns out empty; `used` says which selection was really applied.
+        function [mask, used] = regionMask(xyz, choice)
+            TH = 0.25;
+            used = lower(strtrim(char(choice)));
+            n = size(xyz, 1);
+            if isempty(used) || strcmp(used, 'all') || isempty(xyz) || all(isnan(xyz(:)))
+                mask = true(1, n);
+                used = 'all';
+                return
+            end
+            X = xyz(:,1)';
+            Y = xyz(:,2)';
+            located = ~isnan(X);
+            switch used
+                case 'anterior',  mask = located & X >=  TH;
+                case 'posterior', mask = located & X <= -TH;
+                case 'central',   mask = located & abs(X) < TH;
+                case 'left',      mask = located & Y >=  TH;
+                case 'right',     mask = located & Y <= -TH;
+                case 'medial',    mask = located & abs(Y) < TH;
+                otherwise
+                    mask = true(1, n);
+                    used = 'all';
+                    return
+            end
+            if ~any(mask)
+                mask = true(1, n);
+                used = 'all';
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % The region asked for in dropdownTrackSelect, 'all' when the
+        % dropdown is not in the window.
+        function choice = trackSelection(app)
+            choice = 'all';
+            try
+                if isprop(app, 'dropdownTrackSelect') && isvalid(app.dropdownTrackSelect)
+                    choice = lower(strtrim(char(app.dropdownTrackSelect.Value)));
+                end
+            catch
+            end
+            if isempty(choice), choice = 'all'; end
+        end
+
+        % ------------------------------------------------------------------
+        % The selection shown in the top right corner of the tracker axes.
+        function trackCorner(ax, used, nsel, asked)
+            if strcmpi(used, asked)
+                txt = sprintf('%s (%d ch)', used, nsel);
+            else
+                txt = sprintf('%s (%d ch) - no %s', used, nsel, asked);
+            end
+            h = findall(ax, 'Tag', 'trackSelect');
+            if isempty(h)
+                text(ax, 0.985, 0.97, txt, 'Units', 'normalized', ...
+                    'HorizontalAlignment', 'right', 'VerticalAlignment', 'top', ...
+                    'FontSize', 8, 'Color', [.25 .25 .25], 'Tag', 'trackSelect', ...
+                    'HitTest', 'off', 'HandleVisibility', 'off');
+            else
+                set(h, 'String', txt);
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % Redraw every tracker line for the region now selected. The lines
+        % keep their own per-channel spectra and positions, so the whole
+        % history follows the choice without recomputing any spectrum.
+        function retrackSelection(app)
+            try
+                if ~isprop(app, 'UITrackAxes') || ~isvalid(app.UITrackAxes)
+                    return
+                end
+                ax    = app.UITrackAxes;
+                lines = findobj(ax, 'Tag', 'trackMean');      % newest first
+                if isempty(lines)
+                    return
+                end
+                asked = EegCallbacks.trackSelection(app);
+                used  = asked;
+                nsel  = 0;
+                for L = lines(:)'
+                    u = L.UserData;
+                    if ~isstruct(u) || ~isfield(u, 'D') || isempty(u.D)
+                        continue
+                    end
+                    [mask, used] = EegCallbacks.regionMask(u.xyz, asked);
+                    L.YData = EegCallbacks.spectrumStats(u.D, mask);
+                    nsel = nnz(mask);
+                end
+                % the SD band belongs to the newest line
+                band = findall(ax, 'Tag', 'trackSD');
+                u = lines(1).UserData;
+                if ~isempty(band) && isstruct(u) && isfield(u, 'D') && ~isempty(u.D)
+                    mask = EegCallbacks.regionMask(u.xyz, asked);
+                    [m, sd] = EegCallbacks.spectrumStats(u.D, mask);
+                    xb = lines(1).XData;
+                    set(band(1), 'XData', [xb fliplr(xb)], 'YData', [m+sd fliplr(m-sd)]);
+                end
+                EegCallbacks.trackCorner(ax, used, nsel, asked);
+                EegCallbacks.rescaleTrack(ax);
+                drawnow limitrate
+            catch E
+                fprintf(2, 'Spectrum tracker (selection): %s\n', E.message);
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % Fit the y-axis around whatever is visible in the current x-range.
+        function rescaleTrack(ax)
+            xl = ax.XLim;
+            ys = [];
+            for L = findobj(ax, 'Tag', 'trackMean')'
+                in = L.XData >= xl(1) & L.XData <= xl(2);
+                ys = [ys, L.YData(in)]; %#ok<AGROW>
+            end
+            band = findall(ax, 'Tag', 'trackSD');
+            if ~isempty(band)
+                in = band(1).XData >= xl(1) & band(1).XData <= xl(2);
+                ys = [ys, band(1).YData(in)];
+            end
+            ys = ys(isfinite(ys));
+            if numel(ys) > 1 && max(ys) > min(ys)
+                margin = 0.05 * (max(ys) - min(ys));
+                ax.YLim = [min(ys) - margin, max(ys) + margin];
+            end
         end
 
         % ------------------------------------------------------------------
