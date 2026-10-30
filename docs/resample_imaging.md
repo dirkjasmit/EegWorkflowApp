@@ -11,8 +11,12 @@ same recording is resampled to 256 Hz. They are images of the very strong
 low-frequency content, folded down by the decimation and passed by the finite
 stopband of the anti-aliasing filter. The comb sits at multiples of
 `mod(fs_in, fs_out)`, which is 24 Hz for this pair, so the first tooth falls
-inside the beta band. Resampling to a rate that divides the original, or
-high-pass filtering before resampling, removes the artefact completely.
+inside the beta band. What is being imaged is mainly the DC offset of the
+recording, 5488 uV per channel in these files: resampling to a rate that
+divides the original, or simply taking the per-channel mean out first,
+removes the artefact completely. The application's `spline` method avoids
+the comb as well, but by having no anti-aliasing filter at all, which costs
+a broadband bias of up to 3 dB towards the new Nyquist frequency.
 
 ## Background
 
@@ -92,13 +96,19 @@ to other rates moves the peak exactly as the formula predicts:
 At 240 Hz the peak moves to 64 Hz and 24 Hz is clean, which rules out any
 physiological origin.
 
-**It is driven by the low-frequency power.** A 1 Hz high-pass before
-resampling removes it:
+**It is driven by the low-frequency power, and above all by the DC offset.**
+The raw Biosemi files carry a mean offset of 5488 uV per channel. Taking the
+per-channel mean out before resampling is enough to remove the comb
+completely, and a 1 Hz high-pass does the same:
 
 | | power 0.1-1 Hz | 24 Hz | 48 Hz |
 |---|---|---|---|
 | as recorded | 26.5 dB | +2.10 dB | +4.38 dB |
+| per-channel mean removed | - | -0.72 dB | -0.17 dB |
 | 1 Hz high-passed | 5.7 dB | -0.72 dB | -0.18 dB |
+
+With the DC removed, `pop_resample` reproduces the original spectrum to
+0.00 dB in every band below 100 Hz.
 
 **It is stopband leakage.** Tightening the anti-aliasing filter,
 `pop_resample(EEG, 250, 0.8, 0.1)`, roughly halves it: 24 Hz from +2.10 to
@@ -121,6 +131,40 @@ are created and nothing can leak. The same holds for 2048 -> 256 (1/8). This
 is also why the filter is 130 instead of 16 400 taps and the step runs about
 five times faster. A target rate that divides the original avoids the
 artefact by construction, not by a better filter.
+
+## The spline alternative in the application
+
+The Resample step offers a `spline` method for non-integer ratios, which
+interpolates the unfiltered data with `interp1(..., 'spline')`. Because it
+never upsamples, it creates no images and shows no comb at all. It pays for
+that with aliasing: nothing removes the content above the new Nyquist
+frequency, which folds back as a positive bias that grows with frequency.
+
+Error against the 1024 Hz original, same recording, 1024 -> 250 Hz:
+
+| band | pop_resample | spline |
+|---|---|---|
+| 8-13 Hz | -0.01 dB | +0.04 dB |
+| 18-28 Hz | -0.01 dB | +0.13 dB |
+| 28-40 Hz | 0.00 dB | +0.40 dB |
+| 40-60 Hz | +0.01 dB | +0.63 dB |
+| 60-80 Hz | 0.00 dB | +1.08 dB |
+| 80-100 Hz | 0.00 dB | +1.66 dB |
+| 100-110 Hz | -1.08 dB | +2.23 dB |
+| 110-124 Hz | -10 to -30 dB (the intended roll-off) | +2.6 to +2.95 dB |
+
+| comb, dB above the local floor | 24 Hz | 48 Hz | 72 Hz |
+|---|---|---|---|
+| pop_resample, DC present | +2.10 | +4.38 | +4.31 |
+| pop_resample, DC removed | -0.72 | -0.17 | +0.38 |
+| spline, either way | -0.68 | -0.04 | +0.50 |
+
+So the spline trades a comb of narrow peaks for a broadband bias, and the
+bias is unaffected by removing the DC because it is intrinsic to having no
+filter. By 80 Hz it adds more power than the comb teeth do. The ranking on
+this recording is: `pop_resample` on DC-removed data, clearly first; then
+the spline and `pop_resample` with the DC left in, each wrong in a different
+place.
 
 ## On the padding
 
@@ -145,14 +189,18 @@ for imaging.
    at 1024 or 2048 Hz, 256 Hz costs nothing and removes the problem at the
    source. The application and the validation scripts use 256 for this
    reason, 250 Hz being the rounder number only to human eyes.
-2. **If a published pipeline requires 250 Hz, high-pass first.** Removing the
-   low-frequency power takes away what leaks; a 1 Hz high-pass was enough
-   here. Note that DISCOVER-EEG resamples to 250 Hz before its high-pass.
+2. **If a published pipeline requires 250 Hz, take the DC out first.**
+   Subtracting the per-channel mean, or detrending, or a 1 Hz high-pass: any
+   of them removes the comb, because the offset is what is being imaged.
+   This is the cheapest fix and it leaves the spectrum exact to 0.00 dB
+   below 100 Hz. Note that DISCOVER-EEG resamples to 250 Hz before its
+   high-pass, so its data still carry the offset at that point.
 3. **Otherwise tighten the filter**, `pop_resample(EEG, 250, 0.8, 0.1)`,
    which halves the artefact at the cost of a longer filter.
-4. A spline or other short-kernel interpolation is **not** an alternative: it
-   has a far shallower stopband and would pass more of the images, as well as
-   folding in the genuine content above the new Nyquist frequency.
+4. **The spline method avoids the comb but is not more accurate.** It has no
+   anti-aliasing at all, so it adds a broadband bias instead (see above).
+   Use it only when the comb specifically matters more than accuracy near
+   the top of the band, and prefer removing the DC and using `pop_resample`.
 
 ## Limitations
 
