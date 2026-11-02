@@ -621,12 +621,7 @@ classdef EegCallbacks
             % of mod(fs_old, fs_new) - 24 Hz for 1024 -> 250, inside the beta
             % band. The mean is not put back: the data stay demeaned.
             % See docs/resample_imaging.md.
-            doDemean = true;
-            try
-                doDemean = EegParams.get(data.params, 'resample', 'demean');
-            catch
-            end
-            if doDemean
+            if P('resample','demean')
                 dc = mean(double(tmp.data(:,:)), 2);
                 tmp.data = tmp.data - cast(dc, 'like', tmp.data);
                 if ~isint
